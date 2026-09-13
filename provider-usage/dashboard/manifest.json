@@ -1,9 +1,9 @@
 {
   "name": "provider-usage",
   "label": "Usage",
-  "description": "Live provider usage at a glance: Claude 5h/weekly windows, Codex session/weekly windows, and OpenRouter credits + per-key limits.",
+  "description": "Live provider usage at a glance: Claude 5h/weekly windows, Claude Fable model-scoped quota (when active), Codex session/weekly windows, and OpenRouter credits + per-key limits.",
   "icon": "Gauge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "tab": {
     "path": "/provider-usage",
     "position": "end"

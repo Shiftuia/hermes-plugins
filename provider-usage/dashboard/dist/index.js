@@ -226,6 +226,74 @@
     );
   }
 
+  function ModelScopedFableCard({ section }) {
+    // Distinct from the account-wide Claude card. When the account has no separate model-scoped
+    // quota, section.model_scoped is false and unavailable_reason explains that plainly instead
+    // of duplicating the account bars under a misleading label.
+    if (!section || (section.status !== "ok" && section.status !== "unavailable")) {
+      return React.createElement(
+        C.Card,
+        { className: "pu-card" },
+        React.createElement(
+          C.CardHeader,
+          null,
+          React.createElement(C.CardTitle, null, "Claude Fable")
+        ),
+        React.createElement(
+          C.CardContent,
+          null,
+          React.createElement(ErrorState, {
+            status: section ? section.status : "error",
+            error: section ? section.error : "no data",
+          })
+        )
+      );
+    }
+    if (!section.model_scoped) {
+      return React.createElement(
+        C.Card,
+        { className: "pu-card" },
+        React.createElement(
+          C.CardHeader,
+          null,
+          React.createElement(C.CardTitle, null, "Claude Fable")
+        ),
+        React.createElement(
+          C.CardContent,
+          { className: "pu-card-content" },
+          React.createElement(
+            "div",
+            { className: "pu-muted pu-fable-note" },
+            section.unavailable_reason ||
+              "No distinct Fable quota on this account — Fable usage is drawn from the shared Claude session/weekly windows above."
+          )
+        )
+      );
+    }
+    return React.createElement(
+      C.Card,
+      { className: "pu-card" },
+      React.createElement(
+        C.CardHeader,
+        null,
+        React.createElement(C.CardTitle, null, "Claude Fable (model-scoped)")
+      ),
+      React.createElement(
+        C.CardContent,
+        { className: "pu-card-content" },
+        section.windows.map((w, i) =>
+          React.createElement(UsageBar, {
+            key: i,
+            label: w.label,
+            pct: w.used_percent,
+            detail: w.detail,
+            resetHuman: w.reset_in_human,
+          })
+        )
+      )
+    );
+  }
+
   function fmtUsd(v) {
     if (v == null || typeof v !== "number") return "—";
     return "$" + v.toFixed(2);
@@ -327,6 +395,79 @@
     );
   }
 
+  function CapabilitiesPanel() {
+    const [caps, setCaps] = hooks.useState(null);
+    const [loading, setLoading] = hooks.useState(true);
+    const [error, setError] = hooks.useState(null);
+
+    hooks.useEffect(function () {
+      api("/capabilities")
+        .then(function (res) {
+          setCaps(res);
+        })
+        .catch(function (e) {
+          setError(String((e && e.message) || e));
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    }, []);
+
+    return React.createElement(
+      C.Card,
+      { className: "pu-card pu-card-wide" },
+      React.createElement(
+        C.CardHeader,
+        null,
+        React.createElement(
+          C.CardTitle,
+          null,
+          "What this plugin can actually retrieve"
+        )
+      ),
+      React.createElement(
+        C.CardContent,
+        null,
+        loading && React.createElement("div", { className: "pu-muted" }, "Loading…"),
+        error && React.createElement("div", { className: "pu-error" }, error),
+        caps &&
+          React.createElement(
+            "div",
+            { className: "pu-caps-grid" },
+            caps.sources.map((s, i) =>
+              React.createElement(
+                "div",
+                { key: i, className: "pu-caps-source" },
+                React.createElement("div", { className: "pu-caps-source-title" }, s.label),
+                React.createElement("div", { className: "pu-caps-source-endpoint" }, s.endpoint),
+                React.createElement("div", { className: "pu-caps-source-auth" }, "Auth: " + s.auth),
+                React.createElement(
+                  "div",
+                  { className: "pu-caps-col-label" },
+                  "Retrieves:"
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "pu-details" },
+                  s.retrieves.map((r, j) => React.createElement("li", { key: j }, r))
+                ),
+                React.createElement(
+                  "div",
+                  { className: "pu-caps-col-label" },
+                  "Does NOT retrieve:"
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "pu-details" },
+                  s.does_not_retrieve.map((r, j) => React.createElement("li", { key: j }, r))
+                )
+              )
+            )
+          )
+      )
+    );
+  }
+
   function ProviderUsagePage() {
     const [data, setData] = hooks.useState(null);
     const [loading, setLoading] = hooks.useState(true);
@@ -391,6 +532,7 @@
           "div",
           { className: "pu-grid" },
           React.createElement(ProviderCard, { title: "Claude (Anthropic)", section: data.anthropic }),
+          React.createElement(ModelScopedFableCard, { section: data.anthropic_model_scoped }),
           React.createElement(ProviderCard, {
             title: "OpenAI Codex",
             section: data.openai_codex,
@@ -407,7 +549,8 @@
             section: data.openrouter_key,
           })
         ),
-      data && React.createElement(KeysTable, { section: data.openrouter_keys })
+      data && React.createElement(KeysTable, { section: data.openrouter_keys }),
+      data && React.createElement(CapabilitiesPanel, null)
     );
   }
 

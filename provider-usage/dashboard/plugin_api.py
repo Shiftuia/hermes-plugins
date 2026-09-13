@@ -1,12 +1,28 @@
 """Provider-usage dashboard plugin — backend API routes, mounted at /api/plugins/provider-usage/.
 
-Aggregates three cheap, request-time reads into one payload so the dashboard tab can render
-"how much have I got left right now" without round-tripping three separate calls:
+Aggregates cheap, request-time reads into one payload so the dashboard tab can render
+"how much have I got left right now" without round-tripping several separate calls:
 
   1. Claude (anthropic) 5h-session + weekly window usage      — agent.account_usage.fetch_account_usage
-  2. OpenAI Codex session + weekly window usage                — agent.account_usage.fetch_account_usage
-  3. OpenRouter: Hermes's own key quota + credits balance       — agent.account_usage.fetch_account_usage
-  4. OpenRouter: ALL keys on the account (management API)       — GET https://openrouter.ai/api/v1/keys
+  2. Claude per-model scoped quota (e.g. a Fable weekly cap)   — this module's own oauth/usage read (see below)
+  3. OpenAI Codex session + weekly window usage                — agent.account_usage.fetch_account_usage
+  4. OpenRouter: Hermes's own key quota + credits balance       — agent.account_usage.fetch_account_usage
+  5. OpenRouter: ALL keys on the account (management API)       — GET https://openrouter.ai/api/v1/keys
+
+Claude Fable usage (Sep 2026): the Anthropic OAuth usage endpoint
+(``https://api.anthropic.com/api/oauth/usage``) that ``agent.account_usage`` already calls for the
+account-wide five_hour/seven_day windows ALSO returns a ``limits[]`` array. Most accounts only ever
+see ``kind: session`` / ``kind: weekly_all`` entries there (duplicates of the two windows above,
+scope=null) — but when Anthropic has scoped a distinct per-model weekly allocation to the account
+(observed as a ``weekly_scoped`` entry with ``scope.model.display_name == "Fable"``), that entry is
+a genuinely SEPARATE quota, not a relabeling of the account totals. `agent/account_usage.py` doesn't
+parse `limits[]` at all (core only exposes five_hour/seven_day/seven_day_opus/seven_day_sonnet), and
+this plugin must not modify core (`plugins/AGENTS.md`: "Plugins never touch core"). So this module
+does its OWN read of the same oauth/usage endpoint — reusing only the core token
+resolver/OAuth-detector (`agent.anthropic_credentials`) — parses `limits[]` for model-scoped entries,
+and renders a real Fable card ONLY when Anthropic reports one active for this account. When no
+model-scoped limit is present the Fable card explicitly states that (never a fabricated duplicate of
+the account bars) — see `_fetch_anthropic_model_scoped_usage` and `/capabilities`.
 
 Security notes (read before touching this file):
   - The OpenRouter management key lives in ~/services/_scripts/openrouter-spend/.env. It is read
@@ -164,6 +180,83 @@ async def _fetch_provider_section(provider: str) -> dict[str, Any]:
     return _snapshot_dict(snapshot)
 
 
+# Kinds/groups from Anthropic's oauth/usage `limits[]` array that duplicate the account-wide
+# five_hour/seven_day windows `_fetch_provider_section("anthropic")` already renders (scope=null).
+# Only a `scope.model.display_name` entry is a genuinely distinct allocation worth a second card.
+_ACCOUNT_WIDE_LIMIT_KINDS = {"session", "weekly_all"}
+
+
+def _fetch_anthropic_model_scoped_usage() -> dict[str, Any]:
+    """Claude per-model scoped quota (e.g. a Fable-specific weekly cap), synchronous.
+
+    Reuses ONLY the core token resolver/OAuth-detector (``agent.anthropic_credentials`` — no
+    plugin-owned credential logic) and re-reads the same
+    ``https://api.anthropic.com/api/oauth/usage`` endpoint ``agent.account_usage`` already calls,
+    because that module's dataclass only surfaces the four top-level utilization fields and does
+    not parse the response's ``limits[]`` array. Adding that parsing to core would be a design
+    decision (not this plugin's call — plugins never touch core, see plugins/AGENTS.md), so it
+    lives here. Returns a wire dict shaped like ``_fetch_provider_section``'s output plus a
+    ``model_scoped`` flag the UI uses to render "no distinct Fable quota" instead of a fake bar.
+    """
+    from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
+
+    try:
+        token = (resolve_anthropic_token() or "").strip()
+    except Exception as exc:
+        log.warning("provider-usage: anthropic model-scoped token resolve failed: %s", exc)
+        return {"status": "error", "error": str(exc), "windows": [], "details": [], "model_scoped": False}
+    if not token:
+        return {"status": "unavailable", "error": "no live credentials/session found for this provider on this box",
+                 "windows": [], "details": [], "model_scoped": False}
+    if not _is_oauth_token(token):
+        return {"status": "unavailable", "error": "model-scoped limits are only available for OAuth-backed Claude accounts",
+                 "windows": [], "details": [], "model_scoped": False}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
+               "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
+    try:
+        with httpx.Client(timeout=_FETCH_TIMEOUT_SECONDS) as client:
+            resp = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
+            resp.raise_for_status()
+            payload = resp.json() or {}
+    except httpx.HTTPStatusError as exc:
+        return {"status": "error", "error": f"Anthropic oauth/usage returned HTTP {exc.response.status_code}",
+                 "windows": [], "details": [], "model_scoped": False}
+    except Exception as exc:
+        log.warning("provider-usage: anthropic model-scoped fetch failed: %s", exc)
+        return {"status": "error", "error": "could not reach the Anthropic oauth/usage endpoint",
+                 "windows": [], "details": [], "model_scoped": False}
+    from agent.account_usage import AccountUsageWindow, _format_reset, _parse_dt
+
+    windows: list[dict[str, Any]] = []
+    for item in payload.get("limits") or []:
+        if not isinstance(item, dict) or str(item.get("kind") or "").strip() in _ACCOUNT_WIDE_LIMIT_KINDS:
+            continue
+        model = (item.get("scope") or {}).get("model") or {}
+        display_name = str(model.get("display_name") or "").strip()
+        percent = item.get("percent")
+        if not display_name or not _is_num(percent):
+            continue
+        cadence = {"weekly": "weekly", "session": "session"}.get(str(item.get("group") or "").strip(), "window")
+        reset_at = _parse_dt(item.get("resets_at"))
+        window = AccountUsageWindow(label=f"{display_name} {cadence}", used_percent=float(percent), reset_at=reset_at)
+        windows.append({
+            "label": window.label,
+            "used_percent": round(float(percent), 1),
+            "remaining_percent": round(max(0.0, 100.0 - float(percent)), 1),
+            "reset_at": reset_at.isoformat() if reset_at else None,
+            "reset_in_human": _format_reset(reset_at) if reset_at else None,
+            "detail": f"active: {item.get('is_active')}" if item.get("is_active") is not None else None,
+        })
+    if not windows:
+        return {
+            "status": "ok", "windows": [], "details": [],
+            "unavailable_reason": "This Claude account has no distinct Fable/model-scoped quota right now — "
+                                   "Fable usage is drawn from the shared Claude session/weekly windows above.",
+            "model_scoped": False, "error": None,
+        }
+    return {"status": "ok", "windows": windows, "details": [], "unavailable_reason": None, "model_scoped": True, "error": None}
+
+
 def _key_row(raw: dict[str, Any]) -> dict[str, Any]:
     """One OpenRouter management-API key row -> wire dict. Values are rendered exactly as the
     API returns them (a key can report limit_remaining inconsistent with usage/limit — that's
@@ -225,17 +318,86 @@ async def _fetch_openrouter_keys_section() -> dict[str, Any]:
 @router.get("/usage")
 async def get_usage() -> dict[str, Any]:
     """Everything the tab needs in one call, fetched concurrently."""
-    anthropic, codex, openrouter_key, openrouter_keys = await asyncio.gather(
+    anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys = await asyncio.gather(
         _fetch_provider_section("anthropic"),
+        asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
         _fetch_provider_section("openai-codex"),
         _fetch_provider_section("openrouter"),
         _fetch_openrouter_keys_section(),
+        return_exceptions=True,
     )
+    if isinstance(anthropic_model_scoped, BaseException):
+        log.warning("provider-usage: anthropic model-scoped fetch raised unexpectedly: %s", anthropic_model_scoped)
+        anthropic_model_scoped = {"status": "error", "error": str(anthropic_model_scoped), "windows": [], "details": [], "model_scoped": False}
     return {
         "anthropic": anthropic,
+        "anthropic_model_scoped": anthropic_model_scoped,
         "openai_codex": codex,
         "openrouter_key": openrouter_key,
         "openrouter_keys": openrouter_keys,
+    }
+
+
+@router.get("/capabilities")
+async def get_capabilities() -> dict[str, Any]:
+    """Factual description of what this plugin can retrieve per provider — no secrets, no live
+    fetch (static metadata only, always cheap). Surfaced in the UI as an expandable details panel
+    so "does this plugin see all my Claude/OpenAI/OpenRouter usage?" has a concrete, truthful
+    answer instead of being inferred from card behavior.
+    """
+    return {
+        "sources": [
+            {
+                "provider": "anthropic",
+                "label": "Claude (Anthropic)",
+                "endpoint": "https://api.anthropic.com/api/oauth/usage (OAuth-only)",
+                "retrieves": [
+                    "Current 5-hour session window (% used, reset time)",
+                    "Current 7-day account-wide window (% used, reset time)",
+                    "Opus-specific 7-day window and Sonnet-specific 7-day window, when the account reports them",
+                    "Model-scoped weekly quotas (e.g. Fable), when Anthropic has one active for this account — "
+                    "rendered as its own card, never fabricated when absent",
+                    "Extra-usage credits balance, when pay-as-you-go overage is enabled",
+                ],
+                "does_not_retrieve": [
+                    "Per-conversation or per-session token/cost breakdowns",
+                    "Historical usage (this is a live snapshot, not a time series)",
+                    "Usage for API-key (non-OAuth) Anthropic accounts — those show 'unavailable' by design",
+                ],
+                "auth": "OAuth-backed Claude Code / Claude subscription session on this box",
+            },
+            {
+                "provider": "openai-codex",
+                "label": "OpenAI Codex",
+                "endpoint": "ChatGPT/Codex backend rate-limit + credits usage API",
+                "retrieves": [
+                    "Session and weekly rate-limit windows (% used, reset time)",
+                    "Plan type (e.g. Plus)",
+                    "Banked reset-credit count and redemption (via the Redeem button)",
+                    "Prepaid credits balance, when the account has any",
+                ],
+                "does_not_retrieve": [
+                    "Historical usage (live snapshot only)",
+                    "Per-conversation cost breakdowns",
+                ],
+                "auth": "ChatGPT-account OAuth session, or a pooled Codex credential, on this box",
+            },
+            {
+                "provider": "openrouter",
+                "label": "OpenRouter",
+                "endpoint": "https://openrouter.ai/api/v1/credits + /key (Hermes's own key) and /keys (management API, all keys)",
+                "retrieves": [
+                    "Hermes's own OpenRouter key: quota window, credits balance, today/week/month usage",
+                    "Every key on the account (management API): usage, limit, remaining, reset schedule — masked labels only",
+                ],
+                "does_not_retrieve": [
+                    "The raw key value or the management API key itself (never sent to the browser, never logged)",
+                    "Per-model spend breakdown within a key",
+                ],
+                "auth": "Hermes's runtime OpenRouter API key; the account-wide keys table additionally needs "
+                        "OPENROUTER_MANAGEMENT_API_KEY configured in ~/services/_scripts/openrouter-spend/.env",
+            },
+        ],
     }
 
 

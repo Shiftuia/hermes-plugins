@@ -191,3 +191,47 @@
   opacity: 0.8;
   font-style: italic;
 }
+
+.pu-fable-note {
+  padding: 0.2rem 0;
+}
+
+.pu-caps-header {
+  user-select: none;
+}
+
+.pu-caps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.25rem;
+}
+
+.pu-caps-source {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pu-caps-source-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.pu-caps-source-endpoint {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  word-break: break-word;
+}
+
+.pu-caps-source-auth {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
+.pu-caps-col-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  opacity: 0.7;
+  margin-top: 0.3rem;
+}
