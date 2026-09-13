@@ -160,3 +160,34 @@
   opacity: 0.55;
   font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
+
+.pu-codex-reset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.pu-codex-reset-force {
+  background: #e5484d !important;
+  color: #fff !important;
+}
+
+.pu-codex-reset-note {
+  font-size: 0.78rem;
+}
+
+.pu-codex-reset-ok {
+  color: #3fb950;
+}
+
+.pu-codex-reset-warn {
+  color: #d29922;
+}
+
+.pu-codex-reset-confirm {
+  font-size: 0.75rem;
+  opacity: 0.8;
+  font-style: italic;
+}

@@ -68,7 +68,104 @@
     );
   }
 
-  function ProviderCard({ title, section }) {
+  function CodexResetButton({ section, onRedeemed }) {
+    const [busy, setBusy] = hooks.useState(false);
+    const [result, setResult] = hooks.useState(null); // last non-force response (for the force gate)
+    const [confirming, setConfirming] = hooks.useState(false);
+    const [error, setError] = hooks.useState(null);
+
+    const banked =
+      section && section.status === "ok" && typeof section.banked_reset_credits === "number"
+        ? section.banked_reset_credits
+        : 0;
+
+    function redeem(force) {
+      setBusy(true);
+      setError(null);
+      api("/codex-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: !!force }),
+      })
+        .then(function (res) {
+          setResult(res);
+          setConfirming(false);
+          if (res.redeemed && onRedeemed) onRedeemed();
+        })
+        .catch(function (e) {
+          setError(String((e && e.message) || e));
+          setConfirming(false);
+        })
+        .finally(function () {
+          setBusy(false);
+        });
+    }
+
+    function handleClick() {
+      if (confirming) {
+        // Second, explicit confirmation — this is the ONLY path that may send force=true.
+        redeem(true);
+        return;
+      }
+      redeem(false);
+    }
+
+    // A `not_exhausted` first-call response is what unlocks the force-confirm gate; any other
+    // status (reset / no_credits_banked / already_redeemed / unavailable / …) never does.
+    hooks.useEffect(
+      function () {
+        if (result && result.status === "not_exhausted" && !result.redeemed) {
+          setConfirming(true);
+        } else {
+          setConfirming(false);
+        }
+      },
+      [result]
+    );
+
+    return React.createElement(
+      "div",
+      { className: "pu-codex-reset" },
+      React.createElement(
+        C.Button,
+        {
+          onClick: handleClick,
+          disabled: busy || banked <= 0,
+          className: confirming ? "pu-codex-reset-force" : "",
+        },
+        busy
+          ? "Working…"
+          : confirming
+          ? "Redeem anyway (force)"
+          : "Redeem reset credit"
+      ),
+      banked <= 0 &&
+        React.createElement(
+          "div",
+          { className: "pu-muted pu-codex-reset-note" },
+          "No banked reset credits — nothing to redeem."
+        ),
+      error &&
+        React.createElement("div", { className: "pu-error pu-codex-reset-note" }, error),
+      result &&
+        React.createElement(
+          "div",
+          {
+            className:
+              "pu-codex-reset-note " + (result.redeemed ? "pu-codex-reset-ok" : "pu-codex-reset-warn"),
+          },
+          result.message
+        ),
+      confirming &&
+        React.createElement(
+          "div",
+          { className: "pu-codex-reset-confirm" },
+          "Click \"Redeem anyway (force)\" again to spend a banked credit at the usage shown above. This cannot be undone."
+        )
+    );
+  }
+
+  function ProviderCard({ title, section, extra }) {
     if (!section || section.status !== "ok") {
       return React.createElement(
         C.Card,
@@ -123,7 +220,8 @@
             "ul",
             { className: "pu-details" },
             section.details.map((d, i) => React.createElement("li", { key: i }, d))
-          )
+          ),
+        extra
       )
     );
   }
@@ -293,7 +391,17 @@
           "div",
           { className: "pu-grid" },
           React.createElement(ProviderCard, { title: "Claude (Anthropic)", section: data.anthropic }),
-          React.createElement(ProviderCard, { title: "OpenAI Codex", section: data.openai_codex }),
+          React.createElement(ProviderCard, {
+            title: "OpenAI Codex",
+            section: data.openai_codex,
+            extra:
+              data.openai_codex && data.openai_codex.status === "ok"
+                ? React.createElement(CodexResetButton, {
+                    section: data.openai_codex,
+                    onRedeemed: load,
+                  })
+                : null,
+          }),
           React.createElement(ProviderCard, {
             title: "OpenRouter (Hermes key)",
             section: data.openrouter_key,

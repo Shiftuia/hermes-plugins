@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 
@@ -101,18 +102,38 @@ def _window_dict(window) -> dict[str, Any]:
     }
 
 
+_CODEX_BANKED_DETAIL_RE = re.compile(r"You have (\d+) reset")
+
+
+def _codex_banked_count_from_details(details: list[str]) -> int:
+    """Pull the banked-reset-credit count back out of the human-readable detail line that
+    ``agent.account_usage._fetch_codex_account_usage`` already generates (``"You have N resets
+    banked - ..."``). This is display-layer parsing of a string produced by the same module —
+    not a reimplementation of the guard/consume logic — done so the button can be disabled at
+    0 banked without a second round-trip."""
+    for line in details:
+        match = _CODEX_BANKED_DETAIL_RE.search(line)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
 def _snapshot_dict(snapshot) -> dict[str, Any]:
-    return {
+    details = list(snapshot.details)
+    result: dict[str, Any] = {
         "status": "ok",
         "source": snapshot.source,
         "title": snapshot.title,
         "plan": snapshot.plan,
         "windows": [_window_dict(w) for w in snapshot.windows],
-        "details": list(snapshot.details),
+        "details": details,
         "fetched_at": snapshot.fetched_at.isoformat(),
         "unavailable_reason": snapshot.unavailable_reason,
         "error": None,
     }
+    if snapshot.provider == "openai-codex":
+        result["banked_reset_credits"] = _codex_banked_count_from_details(details)
+    return result
 
 
 async def _fetch_provider_section(provider: str) -> dict[str, Any]:
@@ -215,4 +236,48 @@ async def get_usage() -> dict[str, Any]:
         "openai_codex": codex,
         "openrouter_key": openrouter_key,
         "openrouter_keys": openrouter_keys,
+    }
+
+
+class CodexResetRedeemBody(BaseModel):
+    """Empty-by-default; ``force`` must be explicit and only ever sent as the second, confirmed
+    call — the UI's first click always POSTs with force omitted/false."""
+
+    force: bool = False
+
+
+@router.post("/codex-reset")
+async def post_codex_reset(payload: CodexResetRedeemBody | None = None) -> dict[str, Any]:
+    """Redeem one banked Codex reset credit. Thin wrapper around
+    ``agent.account_usage.redeem_codex_reset_credit`` — all guard/consume logic lives there.
+
+    This route is deliberately POST-only (a GET on this path 405s via FastAPI's default
+    method-not-allowed handling) so a prefetch/crawler/browser-extension can never trigger an
+    irreversible spend. ``force`` defaults to False; the frontend only ever sends
+    ``force=true`` from its second, explicit confirmation step.
+    """
+    from agent.account_usage import redeem_codex_reset_credit
+
+    force = bool(payload.force) if payload is not None else False
+    try:
+        result = await asyncio.to_thread(redeem_codex_reset_credit, force=force)
+    except Exception as exc:  # redeem_codex_reset_credit is documented to never raise; defence in depth
+        log.warning("provider-usage: codex reset redemption raised unexpectedly: %s", exc)
+        return {
+            "status": "unavailable",
+            "message": f"Unexpected error while redeeming: {exc}",
+            "available_count": 0,
+            "windows_reset": 0,
+            "redeemed": False,
+        }
+    log.info(
+        "provider-usage: codex reset redemption attempt — status=%s force=%s banked_after=%d",
+        result.status, force, result.available_count,
+    )
+    return {
+        "status": result.status,
+        "message": result.message,
+        "available_count": result.available_count,
+        "windows_reset": result.windows_reset,
+        "redeemed": result.redeemed,
     }
