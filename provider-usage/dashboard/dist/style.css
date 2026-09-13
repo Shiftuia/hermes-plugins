@@ -196,6 +196,23 @@
   padding: 0.2rem 0;
 }
 
+.pu-fable-inline {
+  margin-top: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.pu-fable-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.75;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .pu-caps-header {
   user-select: none;
 }

@@ -226,70 +226,45 @@
     );
   }
 
-  function ModelScopedFableCard({ section }) {
-    // Distinct from the account-wide Claude card. When the account has no separate model-scoped
-    // quota, section.model_scoped is false and unavailable_reason explains that plainly instead
+  function ModelScopedFableInline({ section }) {
+    // Rendered INSIDE the Claude (Anthropic) card, directly under the account windows —
+    // not as a separate card. When the account has no separate model-scoped quota,
+    // section.model_scoped is false and unavailable_reason explains that plainly instead
     // of duplicating the account bars under a misleading label.
     if (!section || (section.status !== "ok" && section.status !== "unavailable")) {
       return React.createElement(
-        C.Card,
-        { className: "pu-card" },
-        React.createElement(
-          C.CardHeader,
-          null,
-          React.createElement(C.CardTitle, null, "Claude Fable")
-        ),
-        React.createElement(
-          C.CardContent,
-          null,
-          React.createElement(ErrorState, {
-            status: section ? section.status : "error",
-            error: section ? section.error : "no data",
-          })
-        )
+        "div",
+        { className: "pu-fable-inline" },
+        React.createElement(ErrorState, {
+          status: section ? section.status : "error",
+          error: section ? section.error : "no data",
+        })
       );
     }
     if (!section.model_scoped) {
       return React.createElement(
-        C.Card,
-        { className: "pu-card" },
+        "div",
+        { className: "pu-fable-inline" },
         React.createElement(
-          C.CardHeader,
-          null,
-          React.createElement(C.CardTitle, null, "Claude Fable")
-        ),
-        React.createElement(
-          C.CardContent,
-          { className: "pu-card-content" },
-          React.createElement(
-            "div",
-            { className: "pu-muted pu-fable-note" },
-            section.unavailable_reason ||
-              "No distinct Fable quota on this account — Fable usage is drawn from the shared Claude session/weekly windows above."
-          )
+          "div",
+          { className: "pu-muted pu-fable-note" },
+          section.unavailable_reason ||
+            "No distinct Fable quota on this account — Fable usage is drawn from the shared Claude session/weekly windows above."
         )
       );
     }
     return React.createElement(
-      C.Card,
-      { className: "pu-card" },
-      React.createElement(
-        C.CardHeader,
-        null,
-        React.createElement(C.CardTitle, null, "Claude Fable (model-scoped)")
-      ),
-      React.createElement(
-        C.CardContent,
-        { className: "pu-card-content" },
-        section.windows.map((w, i) =>
-          React.createElement(UsageBar, {
-            key: i,
-            label: w.label,
-            pct: w.used_percent,
-            detail: w.detail,
-            resetHuman: w.reset_in_human,
-          })
-        )
+      "div",
+      { className: "pu-fable-inline" },
+      React.createElement("div", { className: "pu-fable-title" }, "Fable (model-scoped)"),
+      section.windows.map((w, i) =>
+        React.createElement(UsageBar, {
+          key: i,
+          label: w.label,
+          pct: w.used_percent,
+          detail: w.detail,
+          resetHuman: w.reset_in_human,
+        })
       )
     );
   }
@@ -531,8 +506,13 @@
         React.createElement(
           "div",
           { className: "pu-grid" },
-          React.createElement(ProviderCard, { title: "Claude (Anthropic)", section: data.anthropic }),
-          React.createElement(ModelScopedFableCard, { section: data.anthropic_model_scoped }),
+          React.createElement(ProviderCard, {
+            title: "Claude (Anthropic)",
+            section: data.anthropic,
+            extra: React.createElement(ModelScopedFableInline, {
+              section: data.anthropic_model_scoped,
+            }),
+          }),
           React.createElement(ProviderCard, {
             title: "OpenAI Codex",
             section: data.openai_codex,
