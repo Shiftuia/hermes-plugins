@@ -1,0 +1,14 @@
+{
+  "name": "provider-usage",
+  "label": "Usage",
+  "description": "Live provider usage at a glance: Claude 5h/weekly windows, Codex session/weekly windows, and OpenRouter credits + per-key limits.",
+  "icon": "Gauge",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/provider-usage",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

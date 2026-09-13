@@ -1,0 +1,162 @@
+.pu-page {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.pu-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pu-page-head h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.pu-page-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.pu-last-fetched {
+  font-size: 0.8rem;
+}
+
+.pu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.pu-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.pu-card-wide {
+  width: 100%;
+}
+
+.pu-window {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.pu-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.pu-window-label {
+  opacity: 0.85;
+}
+
+.pu-window-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pu-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+
+.pu-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.pu-bar-ok {
+  background: #3fb950;
+}
+
+.pu-bar-warn {
+  background: #d29922;
+}
+
+.pu-bar-critical {
+  background: #e5484d;
+}
+
+.pu-bar-unknown {
+  background: rgba(127, 127, 127, 0.4);
+}
+
+.pu-text-ok {
+  color: #3fb950;
+}
+
+.pu-text-warn {
+  color: #d29922;
+}
+
+.pu-text-critical {
+  color: #e5484d;
+}
+
+.pu-window-foot {
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.pu-details {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  opacity: 0.85;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.pu-muted {
+  opacity: 0.6;
+  font-size: 0.85rem;
+}
+
+.pu-error {
+  color: #e5484d;
+  font-size: 0.85rem;
+}
+
+.pu-page-error {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: rgba(229, 72, 77, 0.12);
+}
+
+.pu-key-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.pu-key-table th,
+.pu-key-table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.pu-key-name {
+  min-width: 160px;
+}
+
+.pu-key-label {
+  font-size: 0.72rem;
+  opacity: 0.55;
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}

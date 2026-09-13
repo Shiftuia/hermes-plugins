@@ -1,0 +1,4 @@
+name: provider-usage
+version: 1.0.0
+description: "Dashboard tab: Claude 5h/weekly usage, Codex session/weekly usage, and OpenRouter credits + all-key limits (via the OpenRouter management API), live-fetched on page load."
+author: "butters (Hermes worker)"
