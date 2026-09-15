@@ -25,7 +25,7 @@ model-scoped limit is present the Fable card explicitly states that (never a fab
 the account bars) — see `_fetch_anthropic_model_scoped_usage` and `/capabilities`.
 
 Security notes (read before touching this file):
-  - The OpenRouter management key lives in ~/services/_scripts/openrouter-spend/.env. It is read
+  - The OpenRouter management key lives in ~/dev/services/_scripts/openrouter-spend/.env. It is read
     fresh on every request, NEVER cached on the module/process, NEVER logged, and NEVER placed in
     an HTTP response. Only the per-key masked ``label`` (already masked by OpenRouter, e.g.
     "sk-or-v1-xxx...yyy") is forwarded to the browser.
@@ -57,7 +57,7 @@ router = APIRouter()
 # error card rather than hanging the whole tab.
 _FETCH_TIMEOUT_SECONDS = 12.0
 
-_OPENROUTER_ENV_PATH = Path("~/services/_scripts/openrouter-spend/.env").expanduser()
+_OPENROUTER_ENV_PATH = Path("~/dev/services/_scripts/openrouter-spend/.env").expanduser()
 _OPENROUTER_MGMT_ENV_VAR = "OPENROUTER_MANAGEMENT_API_KEY"
 _OPENROUTER_KEYS_URL = "https://openrouter.ai/api/v1/keys"
 
@@ -395,7 +395,7 @@ async def get_capabilities() -> dict[str, Any]:
                     "Per-model spend breakdown within a key",
                 ],
                 "auth": "Hermes's runtime OpenRouter API key; the account-wide keys table additionally needs "
-                        "OPENROUTER_MANAGEMENT_API_KEY configured in ~/services/_scripts/openrouter-spend/.env",
+                        "OPENROUTER_MANAGEMENT_API_KEY configured in ~/dev/services/_scripts/openrouter-spend/.env",
             },
         ],
     }
