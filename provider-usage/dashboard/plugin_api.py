@@ -159,6 +159,79 @@ def _snapshot_dict(snapshot) -> dict[str, Any]:
     return result
 
 
+def _fetch_codex_account_usage_sync(entry: Any) -> dict[str, Any]:
+    """Usage for one specific pooled Codex credential, bypassing pool selection entirely
+    (``fetch_account_usage(base_url=..., api_key=...)`` goes straight to tier 1 of
+    ``_resolve_codex_usage_credentials`` and skips ``select()``'s exhausted-status filter)."""
+    from agent.account_usage import fetch_account_usage
+
+    snapshot = fetch_account_usage("openai-codex", base_url=entry.runtime_base_url, api_key=entry.runtime_api_key)
+    if snapshot is None:
+        return {"status": "error", "error": "usage endpoint returned no data for this credential", "windows": [], "details": []}
+    return _snapshot_dict(snapshot)
+
+
+async def _fetch_codex_section() -> dict[str, Any]:
+    """OpenAI Codex card: prefer the pool's normally-selected credential; when the pool has
+    no AVAILABLE entry (every account rate-limited/exhausted), fetch usage directly from every
+    pooled entry instead of reporting "unavailable" — a rate-limited account still has real,
+    useful numbers (percent used, reset time), which is exactly when this card matters most.
+    ``fetch_account_usage`` with no explicit key only ever resolves the currently *selectable*
+    credential via ``CredentialPool.select()``; an exhausted entry never comes back from it,
+    even though the same account's usage endpoint is still reachable with its (stale) token.
+    """
+    primary = await _fetch_provider_section("openai-codex")
+    if primary.get("status") != "unavailable":
+        return primary
+
+    from agent.credential_pool import load_pool
+
+    try:
+        entries = await asyncio.to_thread(lambda: load_pool("openai-codex").entries())
+    except Exception as exc:
+        log.warning("provider-usage: openai-codex pool enumeration failed: %s", exc)
+        return primary
+    entries = [e for e in entries if e.runtime_api_key]
+    if not entries:
+        return primary  # genuinely no credentials configured at all — keep the "unavailable" verdict
+
+    results = await asyncio.gather(
+        *(
+            asyncio.wait_for(asyncio.to_thread(_fetch_codex_account_usage_sync, entry), timeout=_FETCH_TIMEOUT_SECONDS)
+            for entry in entries
+        ),
+        return_exceptions=True,
+    )
+
+    windows: list[dict[str, Any]] = []
+    details: list[str] = []
+    banked_total = 0
+    any_ok = False
+    for entry, result in zip(entries, results):
+        label = entry.label or entry.id
+        if isinstance(result, BaseException):
+            details.append(f"{label}: error — {result}")
+            continue
+        if result.get("status") != "ok":
+            details.append(f"{label}: {result.get('status')} — {result.get('error') or 'no details'}")
+            continue
+        any_ok = True
+        banked_total += _codex_banked_count_from_details(result.get("details") or [])
+        # Every window/detail is prefixed with its account's label so a multi-account pool
+        # never blends numbers from different accounts under one unlabeled bar.
+        windows.extend({**w, "label": f"{label} — {w['label']}"} for w in result.get("windows") or [])
+        details.extend(f"{label}: {d}" for d in (result.get("details") or []))
+
+    if not any_ok:
+        # Every pooled account failed too — surface the real reason(s), not a fake "no creds" line.
+        return {"status": "error", "error": "; ".join(details) or "all pooled Codex credentials failed", "windows": [], "details": []}
+    return {
+        "status": "ok", "source": "credential_pool", "title": "Account limits", "plan": None,
+        "windows": windows, "details": details, "unavailable_reason": None, "error": None,
+        "banked_reset_credits": banked_total,
+    }
+
+
 async def _fetch_provider_section(provider: str) -> dict[str, Any]:
     """One provider's card payload. fetch_account_usage() is synchronous (uses httpx.Client) and
     swallows its own exceptions -> None. Run it off the event loop and distinguish None
@@ -338,7 +411,7 @@ async def get_usage(profile: Optional[str] = Query(None)) -> dict[str, Any]:
         anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys = await asyncio.gather(
             _fetch_provider_section("anthropic"),
             asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
-            _fetch_provider_section("openai-codex"),
+            _fetch_codex_section(),
             _fetch_provider_section("openrouter"),
             _fetch_openrouter_keys_section(),
             return_exceptions=True,
