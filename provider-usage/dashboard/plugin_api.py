@@ -46,10 +46,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from hermes_cli.web_deps import late
+
 log = logging.getLogger(__name__)
+
+# Late-bound so this stays a thin caller of the dashboard's own profile-scope seam
+# instead of importing hermes_cli.web_server_profiles at module load (import-cycle safe,
+# consistent with every other extracted router — see hermes_cli/web_routers/_common.py).
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 
 router = APIRouter()
 
@@ -316,16 +323,26 @@ async def _fetch_openrouter_keys_section() -> dict[str, Any]:
 
 
 @router.get("/usage")
-async def get_usage() -> dict[str, Any]:
-    """Everything the tab needs in one call, fetched concurrently."""
-    anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys = await asyncio.gather(
-        _fetch_provider_section("anthropic"),
-        asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
-        _fetch_provider_section("openai-codex"),
-        _fetch_provider_section("openrouter"),
-        _fetch_openrouter_keys_section(),
-        return_exceptions=True,
-    )
+async def get_usage(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Everything the tab needs in one call, fetched concurrently.
+
+    ``profile`` matches every other dashboard route's query param (the Profiles switcher):
+    the multiplexed dashboard host serves several profiles from one process, and credential
+    reads (``resolve_anthropic_token``, ``resolve_runtime_provider``, ...) go through
+    ``agent.secret_scope.get_secret``, which fails closed with no profile scope installed.
+    Without this wrapper every fetch below silently raised ``UnscopedSecretError``, caught by
+    the broad ``except Exception`` guards and rendered as a fake "no live credentials" status
+    even when the profile's credentials are perfectly valid.
+    """
+    with _config_profile_scope(profile):
+        anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys = await asyncio.gather(
+            _fetch_provider_section("anthropic"),
+            asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
+            _fetch_provider_section("openai-codex"),
+            _fetch_provider_section("openrouter"),
+            _fetch_openrouter_keys_section(),
+            return_exceptions=True,
+        )
     if isinstance(anthropic_model_scoped, BaseException):
         log.warning("provider-usage: anthropic model-scoped fetch raised unexpectedly: %s", anthropic_model_scoped)
         anthropic_model_scoped = {"status": "error", "error": str(anthropic_model_scoped), "windows": [], "details": [], "model_scoped": False}
@@ -409,7 +426,7 @@ class CodexResetRedeemBody(BaseModel):
 
 
 @router.post("/codex-reset")
-async def post_codex_reset(payload: CodexResetRedeemBody | None = None) -> dict[str, Any]:
+async def post_codex_reset(payload: CodexResetRedeemBody | None = None, profile: Optional[str] = Query(None)) -> dict[str, Any]:
     """Redeem one banked Codex reset credit. Thin wrapper around
     ``agent.account_usage.redeem_codex_reset_credit`` — all guard/consume logic lives there.
 
@@ -417,12 +434,18 @@ async def post_codex_reset(payload: CodexResetRedeemBody | None = None) -> dict[
     method-not-allowed handling) so a prefetch/crawler/browser-extension can never trigger an
     irreversible spend. ``force`` defaults to False; the frontend only ever sends
     ``force=true`` from its second, explicit confirmation step.
+
+    ``profile``-scoped like ``/usage`` (see its docstring) — the credential read must run under
+    the target profile's secret scope on a multiplexed dashboard host.
     """
     from agent.account_usage import redeem_codex_reset_credit
 
     force = bool(payload.force) if payload is not None else False
     try:
-        result = await asyncio.to_thread(redeem_codex_reset_credit, force=force)
+        def _run():
+            with _config_profile_scope(profile):
+                return redeem_codex_reset_credit(force=force)
+        result = await asyncio.to_thread(_run)
     except Exception as exc:  # redeem_codex_reset_credit is documented to never raise; defence in depth
         log.warning("provider-usage: codex reset redemption raised unexpectedly: %s", exc)
         return {
