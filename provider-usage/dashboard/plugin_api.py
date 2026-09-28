@@ -8,6 +8,15 @@ Aggregates cheap, request-time reads into one payload so the dashboard tab can r
   3. OpenAI Codex session + weekly window usage                — agent.account_usage.fetch_account_usage
   4. OpenRouter: Hermes's own key quota + credits balance       — agent.account_usage.fetch_account_usage
   5. OpenRouter: ALL keys on the account (management API)       — GET https://openrouter.ai/api/v1/keys
+  6. Antigravity (agy CLI) model-pool quotas                    — `agy -p "/usage" --print-timeout Ns` subprocess
+
+Antigravity has no HTTP usage API of its own — the only way to read its quotas is the
+official `agy` binary's `/usage` slash command (see the antigravity-cli/antigravity-delegation
+skills and ~/agent-workspace/notes/antigravity-cli-setup.md for how this was verified). That
+command is real but slow (a full CLI subprocess launch, not a cheap HTTP call) and its output is
+plain tab-separated text with no JSON mode, so this module shells out and string-parses it — the
+result is cached for `_ANTIGRAVITY_CACHE_TTL_SECONDS` and only refreshed on the next dashboard
+load past that TTL, never on a background timer, so a slow `agy` run never repeats on every poll.
 
 Claude Fable usage (Sep 2026): the Anthropic OAuth usage endpoint
 (``https://api.anthropic.com/api/oauth/usage``) that ``agent.account_usage`` already calls for the
@@ -42,6 +51,9 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import subprocess
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -67,6 +79,21 @@ _FETCH_TIMEOUT_SECONDS = 12.0
 _OPENROUTER_ENV_PATH = Path("~/dev/services/_scripts/openrouter-spend/.env").expanduser()
 _OPENROUTER_MGMT_ENV_VAR = "OPENROUTER_MANAGEMENT_API_KEY"
 _OPENROUTER_KEYS_URL = "https://openrouter.ai/api/v1/keys"
+
+# `agy -p "/usage"` is a real CLI subprocess launch (not a cheap HTTP call) — cache its result
+# instead of re-running it on every dashboard load. TTL floor per the task spec: refresh at most
+# once per open of the tab, not continuously in the background.
+_ANTIGRAVITY_CACHE_TTL_SECONDS = 600.0
+_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS = 30
+_ANTIGRAVITY_CACHE: dict[str, Any] = {"result": None, "fetched_at": 0.0}
+_ANTIGRAVITY_CACHE_LOCK = asyncio.Lock()
+
+# GPT-OSS and Claude share one pool in Antigravity's account-wide quota; label reflects that
+# so the UI doesn't imply per-model tracking that agy's /usage output doesn't provide.
+_ANTIGRAVITY_POOL_LABELS = {
+    "Gemini Models": "Gemini",
+    "Claude and GPT models": "Claude + GPT-OSS",
+}
 
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 
@@ -395,6 +422,96 @@ async def _fetch_openrouter_keys_section() -> dict[str, Any]:
     return {"status": "ok", "keys": [_key_row(r) for r in rows if isinstance(r, dict)]}
 
 
+_ANTIGRAVITY_LINE_RE = re.compile(r"^(.+?)\t(.+?)\t(\d+(?:\.\d+)?)%\t(.+)$")
+
+
+def _parse_antigravity_usage(stdout: str) -> list[dict[str, Any]]:
+    """Parse `agy /usage`'s plain tab-separated output (pool, metric, percent, ISO reset time).
+
+    No `--output-format json` exists for this command (see ~/agent-workspace/notes/
+    antigravity-cli-setup.md) — this is the only available parsing strategy. Malformed/extra
+    lines are skipped rather than raising, since the CLI is not a contract we control.
+    """
+    from agent.account_usage import _format_reset, _parse_dt
+
+    windows: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        match = _ANTIGRAVITY_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        pool_raw, metric, percent_remaining_str, reset_raw = match.groups()
+        pool = _ANTIGRAVITY_POOL_LABELS.get(pool_raw.strip(), pool_raw.strip())
+        percent_remaining = float(percent_remaining_str)
+        used_percent = round(max(0.0, 100.0 - percent_remaining), 1)
+        reset_at = _parse_dt(reset_raw.strip())
+        windows.append({
+            "label": f"{pool} — {metric.strip()}",
+            "used_percent": used_percent,
+            "remaining_percent": round(percent_remaining, 1),
+            "reset_at": reset_at.isoformat() if reset_at else None,
+            "reset_in_human": _format_reset(reset_at) if reset_at else None,
+            "detail": None,
+        })
+    return windows
+
+
+def _fetch_antigravity_usage_sync() -> dict[str, Any]:
+    """Run `agy -p "/usage" --print-timeout Ns` and parse its output. Synchronous subprocess
+    call — must run off the event loop (see `_fetch_antigravity_section`).
+    """
+    agy_path = shutil.which("agy")
+    if not agy_path:
+        return {"status": "unavailable", "error": "agy binary not found on PATH", "windows": [], "details": []}
+    try:
+        proc = subprocess.run(
+            [agy_path, "-p", "/usage", "--print-timeout", f"{_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS}s"],
+            capture_output=True, text=True, timeout=_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS + 10,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": f"agy /usage timed out after {_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS}s", "windows": [], "details": []}
+    except Exception as exc:
+        log.warning("provider-usage: agy /usage subprocess failed: %s", exc)
+        return {"status": "error", "error": f"could not run agy: {exc}", "windows": [], "details": []}
+    if proc.returncode != 0:
+        # Never surface raw stderr: agy prints its own error text there, which is safe, but keep
+        # this defensive in case a future version ever echoes anything token-shaped.
+        return {"status": "error", "error": f"agy exited with status {proc.returncode}", "windows": [], "details": []}
+    windows = _parse_antigravity_usage(proc.stdout or "")
+    if not windows:
+        return {"status": "error", "error": "agy /usage returned no parseable pool data", "windows": [], "details": []}
+    return {
+        "status": "ok", "source": "agy", "title": "Antigravity", "plan": None,
+        "windows": windows, "details": [], "unavailable_reason": None, "error": None,
+    }
+
+
+async def _fetch_antigravity_section() -> dict[str, Any]:
+    """Antigravity card: cached because `agy /usage` is a real CLI subprocess launch, not a
+    cheap HTTP call. Refreshed at most once per `_ANTIGRAVITY_CACHE_TTL_SECONDS`, on the next
+    dashboard load past that TTL — never on a background timer.
+    """
+    async with _ANTIGRAVITY_CACHE_LOCK:
+        now = time.monotonic()
+        cached = _ANTIGRAVITY_CACHE["result"]
+        age = now - _ANTIGRAVITY_CACHE["fetched_at"]
+        if cached is not None and age < _ANTIGRAVITY_CACHE_TTL_SECONDS:
+            return {**cached, "cache_age_seconds": round(age)}
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_fetch_antigravity_usage_sync),
+                timeout=_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS + 15,
+            )
+        except asyncio.TimeoutError:
+            result = {"status": "error", "error": "agy /usage fetch timed out", "windows": [], "details": []}
+        except Exception as exc:
+            log.warning("provider-usage: antigravity fetch raised unexpectedly: %s", exc)
+            result = {"status": "error", "error": str(exc), "windows": [], "details": []}
+        if result.get("status") == "ok":
+            _ANTIGRAVITY_CACHE["result"] = result
+            _ANTIGRAVITY_CACHE["fetched_at"] = now
+        return {**result, "cache_age_seconds": 0}
+
+
 @router.get("/usage")
 async def get_usage(profile: Optional[str] = Query(None)) -> dict[str, Any]:
     """Everything the tab needs in one call, fetched concurrently.
@@ -408,23 +525,28 @@ async def get_usage(profile: Optional[str] = Query(None)) -> dict[str, Any]:
     even when the profile's credentials are perfectly valid.
     """
     with _config_profile_scope(profile):
-        anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys = await asyncio.gather(
+        anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys, antigravity = await asyncio.gather(
             _fetch_provider_section("anthropic"),
             asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
             _fetch_codex_section(),
             _fetch_provider_section("openrouter"),
             _fetch_openrouter_keys_section(),
+            _fetch_antigravity_section(),
             return_exceptions=True,
         )
     if isinstance(anthropic_model_scoped, BaseException):
         log.warning("provider-usage: anthropic model-scoped fetch raised unexpectedly: %s", anthropic_model_scoped)
         anthropic_model_scoped = {"status": "error", "error": str(anthropic_model_scoped), "windows": [], "details": [], "model_scoped": False}
+    if isinstance(antigravity, BaseException):
+        log.warning("provider-usage: antigravity fetch raised unexpectedly: %s", antigravity)
+        antigravity = {"status": "error", "error": str(antigravity), "windows": [], "details": []}
     return {
         "anthropic": anthropic,
         "anthropic_model_scoped": anthropic_model_scoped,
         "openai_codex": codex,
         "openrouter_key": openrouter_key,
         "openrouter_keys": openrouter_keys,
+        "antigravity": antigravity,
     }
 
 
@@ -471,6 +593,23 @@ async def get_capabilities() -> dict[str, Any]:
                     "Per-conversation cost breakdowns",
                 ],
                 "auth": "ChatGPT-account OAuth session, or a pooled Codex credential, on this box",
+            },
+            {
+                "provider": "antigravity",
+                "label": "Antigravity",
+                "endpoint": "agy CLI's own `/usage` slash command (no HTTP API)",
+                "retrieves": [
+                    "Gemini pool weekly + 5-hour limit remaining (% used, reset time)",
+                    "Claude + GPT-OSS pool weekly + 5-hour limit remaining (% used, reset time) — "
+                    "these models share one combined pool on this account, not separate quotas",
+                ],
+                "does_not_retrieve": [
+                    "Historical usage (live snapshot only)",
+                    "Per-model breakdown within a pool",
+                    "Anything if the account isn't logged in via `agy` on this box",
+                ],
+                "auth": "agy CLI session on this box (~/.gemini/antigravity-cli/); cached for up to "
+                        f"{int(_ANTIGRAVITY_CACHE_TTL_SECONDS // 60)} minutes since each read shells out to a real CLI subprocess",
             },
             {
                 "provider": "openrouter",

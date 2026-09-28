@@ -525,6 +525,20 @@
                 : null,
           }),
           React.createElement(ProviderCard, {
+            title: "Antigravity",
+            section: data.antigravity,
+            extra:
+              data.antigravity &&
+              data.antigravity.status === "ok" &&
+              data.antigravity.cache_age_seconds > 0
+                ? React.createElement(
+                    "div",
+                    { className: "pu-muted pu-last-fetched" },
+                    "cached " + Math.round(data.antigravity.cache_age_seconds / 60) + "m ago"
+                  )
+                : null,
+          }),
+          React.createElement(ProviderCard, {
             title: "OpenRouter (Hermes key)",
             section: data.openrouter_key,
           })
