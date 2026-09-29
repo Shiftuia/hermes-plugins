@@ -165,6 +165,71 @@
     );
   }
 
+  function useProviderSection(path) {
+    // One provider's own independent async fetch — never awaited alongside any other card,
+    // so a slow/timed-out provider (Antigravity's `agy` subprocess, a hung upstream) can't
+    // delay any other card's render. Cancels/ignores its own response on unmount or when a
+    // newer request for the same card supersedes an in-flight one (stale-response guard).
+    // Keeps the raw response object (not a single extracted key) so routes that return more
+    // than one section (e.g. /usage/anthropic -> anthropic + anthropic_model_scoped) can be
+    // read from a single shared fetch instead of duplicating the request per section.
+    const [data, setData] = hooks.useState(undefined); // undefined = not yet loaded
+    const [loading, setLoading] = hooks.useState(true);
+    const [error, setError] = hooks.useState(null);
+    const requestIdRef = hooks.useRef(0);
+
+    const load = hooks.useCallback(function () {
+      const requestId = ++requestIdRef.current;
+      setLoading(true);
+      setError(null);
+      api(path)
+        .then(function (res) {
+          if (requestId !== requestIdRef.current) return; // stale — a newer request already won
+          setData(res);
+        })
+        .catch(function (e) {
+          if (requestId !== requestIdRef.current) return;
+          setError(String((e && e.message) || e));
+        })
+        .finally(function () {
+          if (requestId !== requestIdRef.current) return;
+          setLoading(false);
+        });
+    }, [path]);
+
+    hooks.useEffect(
+      function () {
+        load();
+      },
+      [load]
+    );
+
+    return { data, loading, error, reload: load };
+  }
+
+
+  function Spinner() {
+    return React.createElement("div", { className: "pu-spinner", "aria-label": "Loading" });
+  }
+
+  function LoadingCard({ title }) {
+    return React.createElement(
+      C.Card,
+      { className: "pu-card" },
+      React.createElement(
+        C.CardHeader,
+        null,
+        React.createElement(C.CardTitle, null, title)
+      ),
+      React.createElement(
+        C.CardContent,
+        { className: "pu-card-content pu-card-loading" },
+        React.createElement(Spinner, null)
+      )
+    );
+  }
+
+
   function ProviderCard({ title, section, extra }) {
     if (!section || section.status !== "ok") {
       return React.createElement(
@@ -444,33 +509,50 @@
   }
 
   function ProviderUsagePage() {
-    const [data, setData] = hooks.useState(null);
-    const [loading, setLoading] = hooks.useState(true);
-    const [error, setError] = hooks.useState(null);
-    const [lastFetched, setLastFetched] = hooks.useState(null);
+    // Each card fetches its own provider independently — no shared await, so a slow
+    // Antigravity/Gemini response never blocks any other card's render (per task spec).
+    const anthropicQ = useProviderSection("/usage/anthropic");
+    const codexQ = useProviderSection("/usage/openai-codex");
+    const orKeyQ = useProviderSection("/usage/openrouter-key");
+    const antigravityQ = useProviderSection("/usage/antigravity");
+    const orKeysQ = useProviderSection("/usage/openrouter-keys");
 
-    const load = hooks.useCallback(function () {
-      setLoading(true);
-      setError(null);
-      api("/usage")
-        .then(function (res) {
-          setData(res);
-          setLastFetched(new Date());
-        })
-        .catch(function (e) {
-          setError(String((e && e.message) || e));
-        })
-        .finally(function () {
-          setLoading(false);
-        });
-    }, []);
+    const anthropicSection = anthropicQ.data && anthropicQ.data.anthropic;
+    const fableSection = anthropicQ.data && anthropicQ.data.anthropic_model_scoped;
+    const codexSection = codexQ.data && codexQ.data.openai_codex;
+    const orKeySection = orKeyQ.data && orKeyQ.data.openrouter_key;
+    const antigravitySection = antigravityQ.data && antigravityQ.data.antigravity;
+    const orKeysSection = orKeysQ.data && orKeysQ.data.openrouter_keys;
 
-    hooks.useEffect(
+    const cards = [anthropicQ, codexQ, orKeyQ, antigravityQ, orKeysQ];
+    const anyLoading = cards.some((c) => c.loading);
+    const lastFetched = hooks.useMemo(
       function () {
-        load();
+        return cards.every((c) => !c.loading) ? new Date() : null;
       },
-      [load]
+      [anthropicQ.loading, codexQ.loading, orKeyQ.loading, antigravityQ.loading, orKeysQ.loading]
     );
+
+    function refreshAll() {
+      anthropicQ.reload();
+      codexQ.reload();
+      orKeyQ.reload();
+      antigravityQ.reload();
+      orKeysQ.reload();
+    }
+
+    function renderCard(title, query, section, extra) {
+      if (section === undefined && query.loading) {
+        return React.createElement(LoadingCard, { title });
+      }
+      if (section === undefined && query.error) {
+        return React.createElement(ProviderCard, {
+          title,
+          section: { status: "error", error: query.error },
+        });
+      }
+      return React.createElement(ProviderCard, { title, section, extra });
+    }
 
     return React.createElement(
       "div",
@@ -490,63 +572,53 @@
             ),
           React.createElement(
             C.Button,
-            { onClick: load, disabled: loading },
-            loading ? "Refreshing…" : "Refresh"
+            { onClick: refreshAll, disabled: anyLoading },
+            anyLoading ? "Refreshing…" : "Refresh"
           )
         )
       ),
-      error &&
-        React.createElement(
-          "div",
-          { className: "pu-error pu-page-error" },
-          "Failed to load usage: " + error
+      React.createElement(
+        "div",
+        { className: "pu-grid" },
+        renderCard(
+          "Claude (Anthropic)",
+          anthropicQ,
+          anthropicSection,
+          React.createElement(ModelScopedFableInline, { section: fableSection })
         ),
-      !data && loading && React.createElement("div", { className: "pu-muted" }, "Loading…"),
-      data &&
-        React.createElement(
-          "div",
-          { className: "pu-grid" },
-          React.createElement(ProviderCard, {
-            title: "Claude (Anthropic)",
-            section: data.anthropic,
-            extra: React.createElement(ModelScopedFableInline, {
-              section: data.anthropic_model_scoped,
-            }),
-          }),
-          React.createElement(ProviderCard, {
-            title: "OpenAI Codex",
-            section: data.openai_codex,
-            extra:
-              data.openai_codex && data.openai_codex.status === "ok"
-                ? React.createElement(CodexResetButton, {
-                    section: data.openai_codex,
-                    onRedeemed: load,
-                  })
-                : null,
-          }),
-          React.createElement(ProviderCard, {
-            title: "Antigravity",
-            section: data.antigravity,
-            extra:
-              data.antigravity &&
-              data.antigravity.status === "ok" &&
-              data.antigravity.cache_age_seconds > 0
-                ? React.createElement(
-                    "div",
-                    { className: "pu-muted pu-last-fetched" },
-                    "cached " + Math.round(data.antigravity.cache_age_seconds / 60) + "m ago"
-                  )
-                : null,
-          }),
-          React.createElement(ProviderCard, {
-            title: "OpenRouter (Hermes key)",
-            section: data.openrouter_key,
-          })
+        renderCard(
+          "OpenAI Codex",
+          codexQ,
+          codexSection,
+          codexSection && codexSection.status === "ok"
+            ? React.createElement(CodexResetButton, { section: codexSection, onRedeemed: codexQ.reload })
+            : null
         ),
-      data && React.createElement(KeysTable, { section: data.openrouter_keys }),
-      data && React.createElement(CapabilitiesPanel, null)
+        renderCard(
+          "Antigravity",
+          antigravityQ,
+          antigravitySection,
+          antigravitySection &&
+            antigravitySection.status === "ok" &&
+            antigravitySection.cache_age_seconds > 0
+            ? React.createElement(
+                "div",
+                { className: "pu-muted pu-last-fetched" },
+                "cached " + Math.round(antigravitySection.cache_age_seconds / 60) + "m ago"
+              )
+            : null
+        ),
+        renderCard("OpenRouter (Hermes key)", orKeyQ, orKeySection)
+      ),
+      orKeysSection === undefined && orKeysQ.loading
+        ? React.createElement(LoadingCard, { title: "OpenRouter — all keys" })
+        : React.createElement(KeysTable, {
+            section: orKeysSection || { status: "error", error: orKeysQ.error },
+          }),
+      React.createElement(CapabilitiesPanel, null)
     );
   }
+
 
   window.__HERMES_PLUGINS__.register("provider-usage", ProviderUsagePage);
 })();

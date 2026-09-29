@@ -1,7 +1,10 @@
 """Provider-usage dashboard plugin — backend API routes, mounted at /api/plugins/provider-usage/.
 
-Aggregates cheap, request-time reads into one payload so the dashboard tab can render
-"how much have I got left right now" without round-tripping several separate calls:
+Each provider gets its own GET route under /usage/<provider> (anthropic, openai-codex,
+openrouter-key, openrouter-keys, antigravity) instead of one combined /usage endpoint, so the
+dashboard tab can render each card the moment its own fetch resolves — a slow/hung provider
+(Antigravity's `agy` subprocess is the canonical example) never blocks any other card's
+initial render. Cheap, request-time reads for each provider:
 
   1. Claude (anthropic) 5h-session + weekly window usage      — agent.account_usage.fetch_account_usage
   2. Claude per-model scoped quota (e.g. a Fable weekly cap)   — this module's own oauth/usage read (see below)
@@ -41,8 +44,9 @@ Security notes (read before touching this file):
   - fetch_account_usage() swallows its own exceptions and returns None on failure. This module
     must not conflate that with "nothing to show" — every provider section carries an explicit
     ``status`` field (ok / unavailable / error) so the UI can render a real error state.
-  - All three provider fetches + the OpenRouter keys fetch run concurrently (asyncio.gather) with
-    a per-call timeout, so one slow/hung upstream can't stall the dashboard request.
+  - Each `/usage/<provider>` route is independently timeout-guarded and returns its own
+    ``status`` field (ok / unavailable / error) — a hung upstream degrades that one card, and
+    never blocks or delays any other provider's route/card.
 """
 
 from __future__ import annotations
@@ -532,42 +536,58 @@ async def _fetch_antigravity_section() -> dict[str, Any]:
         return {**result, "cache_age_seconds": 0}
 
 
-@router.get("/usage")
-async def get_usage(profile: Optional[str] = Query(None)) -> dict[str, Any]:
-    """Everything the tab needs in one call, fetched concurrently.
-
-    ``profile`` matches every other dashboard route's query param (the Profiles switcher):
-    the multiplexed dashboard host serves several profiles from one process, and credential
-    reads (``resolve_anthropic_token``, ``resolve_runtime_provider``, ...) go through
-    ``agent.secret_scope.get_secret``, which fails closed with no profile scope installed.
-    Without this wrapper every fetch below silently raised ``UnscopedSecretError``, caught by
-    the broad ``except Exception`` guards and rendered as a fake "no live credentials" status
-    even when the profile's credentials are perfectly valid.
-    """
+@router.get("/usage/anthropic")
+async def get_usage_anthropic(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Claude card: account windows + model-scoped (Fable) quota, fetched together since both
+    read the same OAuth token and the UI renders them as one card (Fable nested inside)."""
     with _config_profile_scope(profile):
-        anthropic, anthropic_model_scoped, codex, openrouter_key, openrouter_keys, antigravity = await asyncio.gather(
+        anthropic, anthropic_model_scoped = await asyncio.gather(
             _fetch_provider_section("anthropic"),
             asyncio.wait_for(asyncio.to_thread(_fetch_anthropic_model_scoped_usage), timeout=_FETCH_TIMEOUT_SECONDS),
-            _fetch_codex_section(),
-            _fetch_provider_section("openrouter"),
-            _fetch_openrouter_keys_section(),
-            _fetch_antigravity_section(),
             return_exceptions=True,
         )
+    if isinstance(anthropic, BaseException):
+        log.warning("provider-usage: anthropic fetch raised unexpectedly: %s", anthropic)
+        anthropic = {"status": "error", "error": str(anthropic), "windows": [], "details": []}
     if isinstance(anthropic_model_scoped, BaseException):
         log.warning("provider-usage: anthropic model-scoped fetch raised unexpectedly: %s", anthropic_model_scoped)
         anthropic_model_scoped = {"status": "error", "error": str(anthropic_model_scoped), "windows": [], "details": [], "model_scoped": False}
-    if isinstance(antigravity, BaseException):
-        log.warning("provider-usage: antigravity fetch raised unexpectedly: %s", antigravity)
-        antigravity = {"status": "error", "error": str(antigravity), "windows": [], "details": []}
-    return {
-        "anthropic": anthropic,
-        "anthropic_model_scoped": anthropic_model_scoped,
-        "openai_codex": codex,
-        "openrouter_key": openrouter_key,
-        "openrouter_keys": openrouter_keys,
-        "antigravity": antigravity,
-    }
+    return {"anthropic": anthropic, "anthropic_model_scoped": anthropic_model_scoped}
+
+
+@router.get("/usage/openai-codex")
+async def get_usage_openai_codex(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    with _config_profile_scope(profile):
+        codex = await _fetch_codex_section()
+    return {"openai_codex": codex}
+
+
+@router.get("/usage/openrouter-key")
+async def get_usage_openrouter_key(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    with _config_profile_scope(profile):
+        openrouter_key = await _fetch_provider_section("openrouter")
+    return {"openrouter_key": openrouter_key}
+
+
+@router.get("/usage/openrouter-keys")
+async def get_usage_openrouter_keys(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    with _config_profile_scope(profile):
+        openrouter_keys = await _fetch_openrouter_keys_section()
+    return {"openrouter_keys": openrouter_keys}
+
+
+@router.get("/usage/antigravity")
+async def get_usage_antigravity(profile: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Antigravity card: its own route so a slow/uncached `agy /usage` subprocess never blocks
+    (or is blocked by) any other provider's card. Cache semantics unchanged — see
+    ``_fetch_antigravity_section``."""
+    with _config_profile_scope(profile):
+        try:
+            antigravity = await _fetch_antigravity_section()
+        except Exception as exc:
+            log.warning("provider-usage: antigravity fetch raised unexpectedly: %s", exc)
+            antigravity = {"status": "error", "error": str(exc), "windows": [], "details": []}
+    return {"antigravity": antigravity}
 
 
 @router.get("/capabilities")

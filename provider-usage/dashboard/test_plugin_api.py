@@ -50,3 +50,60 @@ def test_fetch_antigravity_usage_sync_unavailable_without_binary(monkeypatch):
     result = plugin_api._fetch_antigravity_usage_sync()
     assert result["status"] == "unavailable"
     assert "agy" in result["error"]
+
+
+def test_usage_split_into_independent_per_provider_routes():
+    """New UX requirement: the dashboard must not await one slow provider before showing
+    others. Verifies the /usage monolith route is gone and each provider has its own route,
+    so the frontend can fetch/render each card independently."""
+    paths = {getattr(route, "path", None) for route in plugin_api.router.routes}
+    assert "/usage" not in paths
+    assert {
+        "/usage/anthropic",
+        "/usage/openai-codex",
+        "/usage/openrouter-key",
+        "/usage/openrouter-keys",
+        "/usage/antigravity",
+    } <= paths
+
+
+def test_antigravity_route_isolated_from_a_slow_codex_fetch(monkeypatch):
+    """A hung/slow Codex (or any other provider) fetch must never block the independent
+    Antigravity route — each is its own coroutine reached via its own HTTP call, not a
+    shared asyncio.gather() on one request."""
+    import asyncio
+
+    async def _slow_codex():
+        raise AssertionError("the Antigravity route must never invoke the Codex fetch")
+
+    monkeypatch.setattr(plugin_api, "_fetch_codex_section", _slow_codex)
+    monkeypatch.setattr(
+        plugin_api, "_fetch_antigravity_section",
+        lambda: asyncio.sleep(0, result={"status": "ok", "windows": [], "details": [], "cache_age_seconds": 0}),
+    )
+    monkeypatch.setattr(plugin_api, "_config_profile_scope", lambda profile: mock.MagicMock(__enter__=lambda s: None, __exit__=lambda *a: False))
+
+    result = asyncio.run(plugin_api.get_usage_antigravity(profile=None))
+    assert result["antigravity"]["status"] == "ok"
+
+
+def test_anthropic_route_fetches_account_and_model_scoped_together():
+    """The Anthropic route intentionally bundles account windows + Fable model-scoped quota
+    in one response (both need the same OAuth token and render as one card) — this must stay
+    a single request, not one route per section, to avoid doubling the OAuth call."""
+    import asyncio
+
+    async def _fake_provider_section(provider):
+        assert provider == "anthropic"
+        return {"status": "ok", "windows": [], "details": []}
+
+    def _fake_model_scoped():
+        return {"status": "ok", "windows": [], "details": [], "model_scoped": False}
+
+    with mock.patch.object(plugin_api, "_fetch_provider_section", _fake_provider_section), \
+         mock.patch.object(plugin_api, "_fetch_anthropic_model_scoped_usage", _fake_model_scoped), \
+         mock.patch.object(plugin_api, "_config_profile_scope", lambda profile: mock.MagicMock(__enter__=lambda s: None, __exit__=lambda *a: False)):
+        result = asyncio.run(plugin_api.get_usage_anthropic(profile=None))
+    assert set(result.keys()) == {"anthropic", "anthropic_model_scoped"}
+    assert result["anthropic"]["status"] == "ok"
+    assert result["anthropic_model_scoped"]["status"] == "ok"
