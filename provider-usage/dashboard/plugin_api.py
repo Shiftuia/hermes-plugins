@@ -455,13 +455,33 @@ def _parse_antigravity_usage(stdout: str) -> list[dict[str, Any]]:
     return windows
 
 
+def _find_agy_binary() -> Optional[str]:
+    """Locate `agy` even when the hosting process's PATH is minimal.
+
+    The dashboard can run under a systemd unit with no explicit PATH= (inherits systemd's bare
+    default: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:...), which omits
+    `~/.local/bin` — where the official agy installer puts the binary. `shutil.which` alone then
+    reports "not found" even though agy works fine for every other process on the box (live
+    regression, Sep 2026: dashboard card showed "no data" right after that unit's last restart,
+    while `agy` had been (re)installed there after the unit started). Check the installer's
+    default location directly as a fallback before giving up.
+    """
+    found = shutil.which("agy")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "agy"
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    return None
+
+
 def _fetch_antigravity_usage_sync() -> dict[str, Any]:
     """Run `agy -p "/usage" --print-timeout Ns` and parse its output. Synchronous subprocess
     call — must run off the event loop (see `_fetch_antigravity_section`).
     """
-    agy_path = shutil.which("agy")
+    agy_path = _find_agy_binary()
     if not agy_path:
-        return {"status": "unavailable", "error": "agy binary not found on PATH", "windows": [], "details": []}
+        return {"status": "unavailable", "error": "agy binary not found on PATH or in ~/.local/bin", "windows": [], "details": []}
     try:
         proc = subprocess.run(
             [agy_path, "-p", "/usage", "--print-timeout", f"{_ANTIGRAVITY_PRINT_TIMEOUT_SECONDS}s"],
