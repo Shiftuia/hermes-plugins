@@ -18,8 +18,9 @@ official `agy` binary's `/usage` slash command (see the antigravity-cli/antigrav
 skills and ~/agent-workspace/notes/antigravity-cli-setup.md for how this was verified). That
 command is real but slow (a full CLI subprocess launch, not a cheap HTTP call) and its output is
 plain tab-separated text with no JSON mode, so this module shells out and string-parses it — the
-result is cached for `_ANTIGRAVITY_CACHE_TTL_SECONDS` and only refreshed on the next dashboard
-load past that TTL, never on a background timer, so a slow `agy` run never repeats on every poll.
+result is cached for `_ANTIGRAVITY_CACHE_TTL_SECONDS` (2 minutes) and only refreshed on the next
+dashboard load past that TTL, never on a background timer, so a slow `agy` run never repeats on
+every poll.
 
 Claude Fable usage (Sep 2026): the Anthropic OAuth usage endpoint
 (``https://api.anthropic.com/api/oauth/usage``) that ``agent.account_usage`` already calls for the
@@ -85,19 +86,33 @@ _OPENROUTER_MGMT_ENV_VAR = "OPENROUTER_MANAGEMENT_API_KEY"
 _OPENROUTER_KEYS_URL = "https://openrouter.ai/api/v1/keys"
 
 # `agy -p "/usage"` is a real CLI subprocess launch (not a cheap HTTP call) — cache its result
-# instead of re-running it on every dashboard load. TTL floor per the task spec: refresh at most
-# once per open of the tab, not continuously in the background.
-_ANTIGRAVITY_CACHE_TTL_SECONDS = 600.0
+# instead of re-running it on every dashboard load. TTL is 2 minutes per Dima's explicit request
+# on t_05ae3ce1 (supersedes the earlier 10-minute figure) — still refresh-on-demand only, never a
+# background timer.
+_ANTIGRAVITY_CACHE_TTL_SECONDS = 120.0
 _ANTIGRAVITY_PRINT_TIMEOUT_SECONDS = 30
 _ANTIGRAVITY_CACHE: dict[str, Any] = {"result": None, "fetched_at": 0.0}
 _ANTIGRAVITY_CACHE_LOCK = asyncio.Lock()
 
-# GPT-OSS and Claude share one pool in Antigravity's account-wide quota; label reflects that
-# so the UI doesn't imply per-model tracking that agy's /usage output doesn't provide.
+# GPT-OSS and Claude share one pool in Antigravity's account-wide quota; "Other" is a UI label
+# only (upstream parser key stays "Claude and GPT models" below) — it doesn't imply the pool's
+# actual membership changed, just that the card doesn't call out individual model names.
 _ANTIGRAVITY_POOL_LABELS = {
     "Gemini Models": "Gemini",
-    "Claude and GPT models": "Claude + GPT-OSS",
+    "Claude and GPT models": "Other",
 }
+
+# agy's raw metric names -> the short labels used elsewhere on the dashboard (Codex's card
+# already says "Session" / "Weekly"; match that instead of agy's verbose "... Limit Remaining").
+_ANTIGRAVITY_METRIC_LABELS = {
+    "Weekly Limit Remaining": "Weekly",
+    "Five Hour Limit Remaining": "Session",
+}
+
+# Dima's explicit display order (t_05ae3ce1): Gemini session, Gemini weekly, Other session,
+# Other weekly — independent of whatever order `agy /usage` happens to print its lines in.
+_ANTIGRAVITY_POOL_ORDER = {"Gemini": 0, "Other": 1}
+_ANTIGRAVITY_METRIC_ORDER = {"Session": 0, "Weekly": 1}
 
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 
@@ -443,19 +458,31 @@ def _parse_antigravity_usage(stdout: str) -> list[dict[str, Any]]:
         match = _ANTIGRAVITY_LINE_RE.match(line.strip())
         if not match:
             continue
-        pool_raw, metric, percent_remaining_str, reset_raw = match.groups()
+        pool_raw, metric_raw, percent_remaining_str, reset_raw = match.groups()
         pool = _ANTIGRAVITY_POOL_LABELS.get(pool_raw.strip(), pool_raw.strip())
+        metric = _ANTIGRAVITY_METRIC_LABELS.get(metric_raw.strip(), metric_raw.strip())
         percent_remaining = float(percent_remaining_str)
         used_percent = round(max(0.0, 100.0 - percent_remaining), 1)
         reset_at = _parse_dt(reset_raw.strip())
         windows.append({
-            "label": f"{pool} — {metric.strip()}",
+            "label": f"{pool} — {metric}",
             "used_percent": used_percent,
             "remaining_percent": round(percent_remaining, 1),
             "reset_at": reset_at.isoformat() if reset_at else None,
             "reset_in_human": _format_reset(reset_at) if reset_at else None,
             "detail": None,
+            "_pool": pool,
+            "_metric": metric,
         })
+    # Dima's explicit display order, not agy's print order — unknown pools/metrics sort last
+    # (stable) rather than raising, since agy's output isn't a contract we control.
+    windows.sort(key=lambda w: (
+        _ANTIGRAVITY_POOL_ORDER.get(w["_pool"], 99),
+        _ANTIGRAVITY_METRIC_ORDER.get(w["_metric"], 99),
+    ))
+    for w in windows:
+        del w["_pool"]
+        del w["_metric"]
     return windows
 
 
@@ -639,8 +666,8 @@ async def get_capabilities() -> dict[str, Any]:
                 "label": "Antigravity",
                 "endpoint": "agy CLI's own `/usage` slash command (no HTTP API)",
                 "retrieves": [
-                    "Gemini pool weekly + 5-hour limit remaining (% used, reset time)",
-                    "Claude + GPT-OSS pool weekly + 5-hour limit remaining (% used, reset time) — "
+                    "Gemini pool session (5-hour) + weekly limit remaining (% used, reset time)",
+                    "Other pool (Claude + GPT-OSS) session (5-hour) + weekly limit remaining (% used, reset time) — "
                     "these models share one combined pool on this account, not separate quotas",
                 ],
                 "does_not_retrieve": [

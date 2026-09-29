@@ -107,3 +107,68 @@ def test_anthropic_route_fetches_account_and_model_scoped_together():
     assert set(result.keys()) == {"anthropic", "anthropic_model_scoped"}
     assert result["anthropic"]["status"] == "ok"
     assert result["anthropic_model_scoped"]["status"] == "ok"
+
+
+_AGY_USAGE_STDOUT = (
+    "Claude and GPT models\tWeekly Limit Remaining\t63%\t2026-10-04T11:22:39Z\n"
+    "Gemini Models\tFive Hour Limit Remaining\t99%\t2026-09-29T01:42:33Z\n"
+    "Gemini Models\tWeekly Limit Remaining\t93%\t2026-10-04T12:21:36Z\n"
+    "Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-09-29T01:50:09Z\n"
+)
+
+
+def test_parse_antigravity_usage_orders_and_labels_windows_per_spec():
+    """Dima's explicit order (t_05ae3ce1): Gemini Session, Gemini Weekly, Other Session,
+    Other Weekly — independent of the order agy happened to print lines in. Labels use the
+    short "Session"/"Weekly" naming and the "Other" pool name (Claude+GPT-OSS)."""
+    windows = plugin_api._parse_antigravity_usage(_AGY_USAGE_STDOUT)
+    assert [w["label"] for w in windows] == [
+        "Gemini — Session",
+        "Gemini — Weekly",
+        "Other — Session",
+        "Other — Weekly",
+    ]
+    assert all("_pool" not in w and "_metric" not in w for w in windows)
+
+
+def test_antigravity_cache_ttl_is_exactly_120_seconds():
+    """Explicit 2-minute TTL per t_05ae3ce1, superseding the earlier 10-minute figure."""
+    assert plugin_api._ANTIGRAVITY_CACHE_TTL_SECONDS == 120.0
+
+
+def test_antigravity_section_refetches_on_demand_after_ttl_expires(monkeypatch):
+    """Cache must expire and refresh on the NEXT request past the TTL (on-demand), never on a
+    background timer — this test drives that by advancing time.monotonic() between two calls."""
+    import asyncio
+
+    plugin_api._ANTIGRAVITY_CACHE["result"] = None
+    plugin_api._ANTIGRAVITY_CACHE["fetched_at"] = 0.0
+    calls = {"n": 0}
+
+    def _fake_sync():
+        calls["n"] += 1
+        return {"status": "ok", "source": "agy", "title": "Antigravity", "plan": None,
+                "windows": [], "details": [], "unavailable_reason": None, "error": None}
+
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(plugin_api.time, "monotonic", lambda: fake_now["t"])
+    monkeypatch.setattr(plugin_api, "_fetch_antigravity_usage_sync", _fake_sync)
+
+    asyncio.run(plugin_api._fetch_antigravity_section())
+    assert calls["n"] == 1
+
+    fake_now["t"] += 60.0  # still within the 120s TTL
+    asyncio.run(plugin_api._fetch_antigravity_section())
+    assert calls["n"] == 1, "must not re-run agy before the TTL elapses"
+
+    fake_now["t"] += 61.0  # now 121s since the first fetch: past the TTL
+    asyncio.run(plugin_api._fetch_antigravity_section())
+    assert calls["n"] == 2, "must refresh on the next request once the TTL has elapsed"
+
+
+def test_antigravity_ttl_change_does_not_affect_other_provider_caches():
+    """Only Antigravity caches results at all (agy is the one slow subprocess call); the other
+    four routes have no cache/TTL of their own, so this TTL change is scoped to Antigravity."""
+    assert not hasattr(plugin_api, "_ANTHROPIC_CACHE_TTL_SECONDS")
+    assert not hasattr(plugin_api, "_CODEX_CACHE_TTL_SECONDS")
+    assert not hasattr(plugin_api, "_OPENROUTER_CACHE_TTL_SECONDS")
