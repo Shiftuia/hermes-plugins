@@ -5,7 +5,7 @@
 .upa-card { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 1rem; }
 .upa-controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
 .upa-field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 10rem; }
-.upa-field:nth-child(2) { flex: 1 1 22rem; }
+.upa-controls > .upa-field:nth-child(2) { flex: 1 1 22rem; }
 .upa-toggle { display: flex; border: 1px solid currentColor; border-radius: 0.375rem; overflow: hidden; opacity: 0.9; }
 .upa-toggle-btn { padding: 0.3rem 0.7rem; font-size: 0.8rem; background: transparent; color: inherit; border: 0; cursor: pointer; }
 .upa-toggle-btn:disabled { opacity: 0.4; cursor: default; }
@@ -46,3 +46,8 @@
 .upa-errors { font-size: 0.75rem; border-collapse: collapse; width: 100%; }
 .upa-errors td { padding: 0.2rem 0.5rem; border-top: 1px solid rgba(255, 255, 255, 0.08); vertical-align: top; }
 .upa-err-msg { max-width: 40rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upa-range-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.upa-range .upa-toggle { flex-wrap: wrap; }
+.upa-custom { display: inline-flex; gap: 0.4rem; align-items: center; }
+.upa-dt { height: 2rem; padding: 0 0.4rem; font: inherit; font-size: 0.8rem; color: inherit; background: transparent; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 0.375rem; color-scheme: dark; }
+.upa-zone { font-size: 0.75rem; font-weight: 600; padding: 0.15rem 0.45rem; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 0.375rem; cursor: help; }

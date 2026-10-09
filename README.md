@@ -47,17 +47,24 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
 (`mode=ro`), never calls the Upload-Post API.
 
 - Selectors: profile → channel overall or a single post; metric (views/reach/impressions, likes,
-  comments, shares, followers); cumulative vs per-interval.
+  comments, shares, followers); cumulative vs per-interval; time range.
+- Range: presets 1 day … 1 year are "now minus N" in absolute time (1 day = last 24 h); "Since
+  publish" for a post; Custom… takes local date+time `from–to`. Default 1 month for the channel,
+  1 week for a post (since publish if newer). Display/input is in the browser's zone, labelled next to
+  the picker (e.g. `IDT`, or `IDT → IST` when the range crosses a DST change). The client converts to
+  UTC epoch seconds; the backend filters `from_ts <= ts < to_ts` and never parses naive strings.
+- Daily channel series are platform calendar dates, returned as `"YYYY-MM-DD"` and plotted at that date —
+  never shifted by a zone. They are kept when the date lies in `[date(from_ts), date(to_ts - 1)]`, both
+  dates taken in the browser's `tz`. Tooltip: plain date for daily series, local date-time + zone for snapshots.
 - One line per platform, labelled with its own `metric_type` — reach, views and impressions are never
   summed. Legend sits on top of the chart: click an item to hide/show its line, hover to highlight it;
   hovering the plot shows date + every visible line's value. Dashed = rolling 30-day window series.
-  Cross-posts are grouped by Upload-Post `request_id`; manual posts (no `request_id`) on different
-  platforms published within 15 min of each other are grouped by time and shown with `≈`.
+  Cross-posts are grouped by vault `content_id`, else by Upload-Post `request_id`; anything else is a lone post.
 - Channel views/reach come from the daily series (cumulative = running sum); post metrics and channel
   followers are lifetime counters (per-interval = diff between snapshots); channel likes/comments/shares
   are Upload-Post's rolling 30-day totals and are shown as-is in both modes.
 - Strip on top: last 24 h ticks, requests, min `X-RateLimit-Remaining`, 429 count, latest errors.
-- Routes: `GET /options`, `/series?profile=&target=channel|r:<request_id>|p:<ids>&metric=`, `/health`.
+- Routes: `GET /options`, `/series?profile=&target=channel|c:<content_id>|r:<request_id>|p:<ids>&metric=&from_ts=&to_ts=&tz=`, `/health`.
 - Needs `upload-post-analytics` in `plugins.enabled` (config.yaml) and a dashboard restart to mount
   the backend. Tests: `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest
   upload-post-analytics/dashboard provider-usage/dashboard`.

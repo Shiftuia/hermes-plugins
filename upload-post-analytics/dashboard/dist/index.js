@@ -46,6 +46,41 @@
     };
   }
 
+  const DAY = 86400;
+  const PRESETS = [["1d", "1 day", DAY], ["3d", "3 days", 3 * DAY], ["1w", "1 week", 7 * DAY],
+    ["1m", "1 month", 30 * DAY], ["3m", "3 months", 91 * DAY], ["6m", "6 months", 182 * DAY], ["1y", "1 year", 365 * DAY]];
+  const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // en "GMT+3" says nothing; derive "IDT"/"IST" from the long name. Per date, so a DST-crossing range shows both.
+  function zoneLabel(ms) {
+    const part = function (style) {
+      const p = new Intl.DateTimeFormat("en-US", { timeZoneName: style }).formatToParts(new Date(ms))
+        .find(function (x) { return x.type === "timeZoneName"; });
+      return p ? p.value : "";
+    };
+    const short = part("short");
+    if (/^[A-Z]{2,5}$/.test(short)) return short;
+    const long = part("long");
+    return /^[A-Za-z ]+$/.test(long) ? long.split(" ").map(function (w) { return w[0]; }).join("").toUpperCase() : short;
+  }
+
+  // <input type="datetime-local"> value <-> epoch ms; both sides are the browser's local zone.
+  function toLocalInput(ms) {
+    const d = new Date(ms);
+    const p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function fromLocalInput(v) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(v || "");
+    return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN;
+  }
+
+  // A daily point is a platform calendar date, not an instant: plot it at that date's local midnight, label it as the date.
+  function dateX(date) {
+    const m = date.split("-");
+    return new Date(+m[0], m[1] - 1, +m[2]).getTime();
+  }
+
   // daily → running sum / as-is; total → as-is / consecutive diff; window → as-is either way.
   function transform(line, mode) {
     const pts = line.points;
@@ -53,7 +88,7 @@
     if (line.kind === "daily") {
       if (mode === "delta") return pts;
       let acc = 0;
-      return pts.map(function (p) { acc += p[1]; return [p[0], acc]; });
+      return pts.map(function (p) { acc += p[1]; return [p[0], acc, p[2]]; });
     }
     if (mode === "cumulative") return pts;
     const out = [];
@@ -74,6 +109,15 @@
     const d = new Date(ms);
     const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     return spanMs < 3 * 86400000 ? day + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : day;
+  }
+
+  function fmtTipTime(ms) {
+    return new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit" }) + " " + zoneLabel(ms);
+  }
+
+  function fmtPlainDate(date) {
+    return new Date(dateX(date)).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" });
   }
 
   function Swatch({ line }) {
@@ -101,17 +145,18 @@
       }));
   }
 
-  function Chart({ lines, anyLines, hover }) {
+  function Chart({ lines, anyLines, hover, range }) {
     const W = 900, H = 340, L = 56, R = 16, T = 12, B = 34;
     const [cursor, setCursor] = hooks.useState(null);
     const all = [];
     lines.forEach(function (l) { l.pts.forEach(function (p) { all.push(p); }); });
     if (all.length === 0) {
       return h("div", { className: "upa-empty" },
-        anyLines && lines.length === 0 ? "All lines are hidden — click a legend item to show it." : "No data points for this selection yet.");
+        anyLines && lines.length === 0 ? "All lines are hidden — click a legend item to show it." : "No data points in this range.");
     }
-    let x0 = Math.min.apply(null, all.map(function (p) { return p[0]; }));
-    let x1 = Math.max.apply(null, all.map(function (p) { return p[0]; }));
+    // Axis spans the selected range (absolute ms), widened only if a daily point's local midnight sits just before it.
+    let x0 = Math.min(range[0], Math.min.apply(null, all.map(function (p) { return p[0]; })));
+    let x1 = Math.max(range[1], Math.max.apply(null, all.map(function (p) { return p[0]; })));
     let y0 = Math.min(0, Math.min.apply(null, all.map(function (p) { return p[1]; })));
     let y1 = Math.max.apply(null, all.map(function (p) { return p[1]; }));
     if (x1 === x0) { x0 -= 3600000; x1 += 3600000; }
@@ -148,6 +193,7 @@
       setCursor(x < L || x > W - R ? null : x);
     };
     const tipLeft = tip ? (sx(tip.ts) / W) * 100 : 0;
+    const tipDaily = tip && tip.rows.find(function (r) { return r.p && r.p[2]; });
 
     return h("div", { className: "upa-plot" },
       h("svg", { className: "upa-chart", viewBox: "0 0 " + W + " " + H, role: "img",
@@ -176,7 +222,7 @@
             className: "upa-cursor-dot" });
         })),
       tip && h("div", { className: "upa-tip" + (tipLeft > 60 ? " upa-tip-left" : ""), style: { left: tipLeft + "%" } },
-        h("div", { className: "upa-tip-date" }, fmtDate(tip.ts, x1 - x0)),
+        h("div", { className: "upa-tip-date" }, tipDaily ? fmtPlainDate(tipDaily.p[2]) : fmtTipTime(tip.ts)),
         tip.rows.map(function (r) {
           return h("div", { key: r.line.id, className: "upa-tip-row" },
             h(Swatch, { line: r.line }),
@@ -218,6 +264,43 @@
     return date + " · " + p.title + (p.snapshots ? "" : " (no snapshots)");
   }
 
+  function defaultRange(post, nowMs) {
+    if (!post) return "1m";
+    return post.published_at && post.published_at * 1000 > nowMs - 7 * DAY * 1000 ? "pub" : "1w";
+  }
+
+  // [fromMs, toMs) in absolute time; presets are "now minus N", not calendar-day boundaries.
+  function resolveRange(key, nowMs, post, custom) {
+    if (key === "custom") return [fromLocalInput(custom[0]), fromLocalInput(custom[1])];
+    if (key === "pub") return [post && post.published_at ? post.published_at * 1000 : nowMs - 7 * DAY * 1000, nowMs];
+    const preset = PRESETS.find(function (p) { return p[0] === key; }) || PRESETS[3];
+    return [nowMs - preset[2] * 1000, nowMs];
+  }
+
+  function RangePicker({ rangeKey, setRangeKey, post, custom, setCustom, range, valid }) {
+    const options = (post && post.published_at ? [["pub", "Since publish"]] : []).concat(
+      PRESETS.map(function (p) { return [p[0], p[1]]; }), [["custom", "Custom…"]]);
+    const z0 = zoneLabel(range[0] || Date.now()), z1 = zoneLabel(range[1] || Date.now());
+    return h("div", { className: "upa-field upa-range" },
+      h("span", { className: "upa-muted" }, "Range"),
+      h("div", { className: "upa-range-row" },
+        h("div", { className: "upa-toggle", role: "group", "aria-label": "Time range" },
+          options.map(function (o) {
+            return h("button", { key: o[0], type: "button", "aria-pressed": rangeKey === o[0],
+              className: "upa-toggle-btn" + (rangeKey === o[0] ? " upa-active" : ""),
+              onClick: function () { setRangeKey(o[0]); } }, o[1]);
+          })),
+        rangeKey === "custom" && h("div", { className: "upa-custom" },
+          h("input", { type: "datetime-local", className: "upa-dt", "aria-label": "From (local time)", value: custom[0],
+            max: custom[1] || undefined, onChange: function (e) { setCustom([e.target.value, custom[1]]); } }),
+          h("span", { className: "upa-muted" }, "–"),
+          h("input", { type: "datetime-local", className: "upa-dt", "aria-label": "To (local time)", value: custom[1],
+            min: custom[0] || undefined, onChange: function (e) { setCustom([custom[0], e.target.value]); } })),
+        h("span", { className: "upa-zone", title: TZ + " — times shown and entered in this zone" },
+          z0 === z1 ? z0 : z0 + " → " + z1)),
+      !valid && h("span", { className: "upa-bad upa-muted" }, "“To” must be after “From”."));
+  }
+
   function UploadPostAnalyticsPage() {
     const opts = useQuery("/options");
     const [profile, setProfile] = hooks.useState("");
@@ -239,9 +322,31 @@
       }
     }, [profiles.length]);
     const current = profiles.find(function (p) { return p.profile === profile; });
+    const post = current && target !== "channel" ? current.posts.find(function (p) { return p.key === target; }) : null;
 
-    const seriesPath = profile
+    const [nowMs, setNowMs] = hooks.useState(function () { return Date.now(); });
+    const [rangeKey, setRangeKeyRaw] = hooks.useState("1m");
+    const [custom, setCustom] = hooks.useState(["", ""]);
+    const range = resolveRange(rangeKey, nowMs, post, custom);
+    const rangeValid = isFinite(range[0]) && isFinite(range[1]) && range[1] > range[0];
+    const setRangeKey = function (k) {
+      const t = Date.now();
+      if (k === "custom") {
+        const r = rangeKey === "custom" ? range : resolveRange(rangeKey, t, post, custom);
+        setCustom([toLocalInput(r[0]), toLocalInput(r[1])]);
+      }
+      setNowMs(t);
+      setRangeKeyRaw(k);
+    };
+    hooks.useEffect(function () {
+      const t = Date.now();
+      setNowMs(t);
+      setRangeKeyRaw(defaultRange(post, t));
+    }, [profile, target, !!post]);
+
+    const seriesPath = profile && rangeValid
       ? "/series?profile=" + encodeURIComponent(profile) + "&target=" + encodeURIComponent(target) + "&metric=" + metric
+        + "&from_ts=" + Math.floor(range[0] / 1000) + "&to_ts=" + Math.ceil(range[1] / 1000) + "&tz=" + encodeURIComponent(TZ)
       : null;
     const series = useQuery(seriesPath);
     const health = useQuery("/health" + (profile ? "?profile=" + encodeURIComponent(profile) : ""));
@@ -250,7 +355,9 @@
       const d = series.data;
       if (!d || d.status !== "ok") return [];
       return d.lines.map(function (l) {
-        const pts = transform(l, mode);
+        const src = l.kind === "daily" ? Object.assign({}, l, {
+          points: l.points.map(function (p) { return [dateX(p[0]), p[1], p[0]]; }) }) : l;
+        const pts = transform(src, mode);
         return {
           id: l.platform + ":" + l.metric_type,
           platform: l.platform,
@@ -282,7 +389,10 @@
     return h("div", { className: "upa-page" },
       h("div", { className: "upa-head" },
         h("h2", null, "Upload-Post analytics"),
-        h(C.Button, { onClick: function () { opts.reload(); series.reload(); health.reload(); }, disabled: series.loading },
+        h(C.Button, { onClick: function () {
+          opts.reload(); health.reload();
+          if (rangeKey === "custom") series.reload(); else setNowMs(Date.now());
+        }, disabled: series.loading },
           series.loading ? "Loading…" : "Refresh")),
       h(HealthStrip, { q: health }),
       h(C.Card, null,
@@ -301,14 +411,17 @@
                     className: "upa-toggle-btn" + (mode === m ? " upa-active" : ""), onClick: function () { setMode(m); } },
                     m === "cumulative" ? "Cumulative" : "Per interval");
                 })))),
+          h(RangePicker, { rangeKey: rangeKey, setRangeKey: setRangeKey, post: post, custom: custom, setCustom: setCustom,
+            range: range, valid: rangeValid }),
           series.error && h("div", { className: "upa-health upa-bad" }, series.error),
           series.data && series.data.status !== "ok" && h("div", { className: "upa-health upa-bad" }, series.data.error),
           h("div", { className: "upa-chart-box" },
             h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover }),
-            h(Chart, { lines: lines.filter(function (l) { return !hidden.has(l.id); }), anyLines: lines.length > 0, hover: hover })),
+            h(Chart, { lines: rangeValid ? lines.filter(function (l) { return !hidden.has(l.id); }) : [],
+              anyLines: rangeValid && lines.length > 0, hover: hover, range: range })),
           h("div", { className: "upa-muted upa-note" },
             target === "channel" && metric === "primary"
-              ? "Daily series from Upload-Post (last 30 days, kept by the collector beyond that). Each platform reports its own metric type; they are never summed."
+              ? "Daily series from Upload-Post (last 30 days, kept by the collector beyond that), plotted at each platform's own calendar date — never shifted by time zone. Each platform reports its own metric type; they are never summed."
               : target === "channel" && metric !== "followers"
               ? "Channel likes/comments/shares are Upload-Post's rolling 30-day totals per snapshot (dashed), shown as-is."
               : "Snapshots taken by the collector; per-interval = change between consecutive snapshots."),

@@ -10,6 +10,12 @@ Series kinds, so the UI can toggle cumulative vs per-interval honestly:
   - ``window`` rolling 30-day aggregates (channel snapshot likes/comments/shares): shown as-is
                in both modes, because neither a running sum nor a diff of a rolling window means anything.
 Values with different ``metric_type`` (reach / views / impressions) are never summed together.
+
+Time: snapshot points are ``[epoch_ms, value]`` (stored as UTC epoch seconds). Daily points are
+``["YYYY-MM-DD", value]`` -- calendar dates in the platform's own day, passed through untouched
+so no timezone can shift them. ``/series`` range is half-open ``[from_ts, to_ts)`` in epoch
+seconds; daily rows are kept when their date falls in ``[date(from_ts), date(to_ts - 1)]`` with
+both bounds converted to calendar dates in the caller's IANA ``tz``.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter
 
@@ -30,6 +37,7 @@ DB_PATH = Path("~/dev/services/_scripts/upload-post-analytics/data/upload_post_a
 METRICS = ("primary", "likes", "comments", "shares", "followers")
 PRIMARY_COLS = ("views", "reach", "impressions")
 HEALTH_WINDOW_SECONDS = 24 * 3600
+MAX_TS = 4102444800  # 2100-01-01Z: "unbounded" upper edge, still convertible to a date in any zone
 
 
 def _connect() -> Optional[sqlite3.Connection]:
@@ -126,10 +134,6 @@ def get_options() -> dict[str, Any]:
             "metrics": list(METRICS)}
 
 
-def _date_ms(date: str) -> int:
-    return int(time.mktime(time.strptime(date, "%Y-%m-%d"))) * 1000
-
-
 def _primary_value(row) -> tuple[Optional[float], Optional[str]]:
     mtype = row["metric_type"]
     if mtype in PRIMARY_COLS and row[mtype] is not None:
@@ -140,23 +144,33 @@ def _primary_value(row) -> tuple[Optional[float], Optional[str]]:
     return None, mtype
 
 
-def _channel_series(db, profile: str, metric: str) -> list[dict[str, Any]]:
+def _date_bounds(from_ts: int, to_ts: int, tz: ZoneInfo) -> tuple[str, str]:
+    """Inclusive calendar-date bounds of the epoch range [from_ts, to_ts) as seen in ``tz``."""
+    first = datetime.fromtimestamp(from_ts, tz).date()
+    last = datetime.fromtimestamp(to_ts - 1, tz).date()
+    return first.isoformat(), last.isoformat()
+
+
+def _channel_series(db, profile: str, metric: str, from_ts: int, to_ts: int, tz: ZoneInfo) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     if metric == "primary":
+        d0, d1 = _date_bounds(from_ts, to_ts, tz)
         rows = db.execute(
             "SELECT platform, series, metric_type, date, value FROM channel_daily"
-            " WHERE profile=? AND series=metric_type ORDER BY platform, date", (profile,)).fetchall()
+            " WHERE profile=? AND series=metric_type AND date >= ? AND date <= ? ORDER BY platform, date",
+            (profile, d0, d1)).fetchall()
         by_platform: dict[str, dict[str, Any]] = {}
         for r in rows:
             line = by_platform.setdefault(r["platform"], {
                 "platform": r["platform"], "metric_type": r["metric_type"], "kind": "daily", "points": []})
-            line["points"].append([_date_ms(r["date"]), r["value"]])
+            line["points"].append([r["date"], r["value"]])
         return list(by_platform.values())
     col = metric
     kind = "total" if metric == "followers" else "window"
     rows = db.execute(
         f"SELECT platform, ts, {col} AS v FROM channel_snapshots"
-        f" WHERE profile=? AND {col} IS NOT NULL ORDER BY platform, ts", (profile,)).fetchall()
+        f" WHERE profile=? AND {col} IS NOT NULL AND ts >= ? AND ts < ? ORDER BY platform, ts",
+        (profile, from_ts, to_ts)).fetchall()
     by_platform = {}
     for r in rows:
         line = by_platform.setdefault(r["platform"], {
@@ -166,7 +180,7 @@ def _channel_series(db, profile: str, metric: str) -> list[dict[str, Any]]:
     return lines
 
 
-def _post_series(db, profile: str, key: str, metric: str) -> list[dict[str, Any]]:
+def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
     kind, _, ident = key.partition(":")
     if kind == "c":
         posts = db.execute("SELECT id, platform FROM posts WHERE profile=? AND content_id=? ORDER BY platform",
@@ -182,7 +196,8 @@ def _post_series(db, profile: str, key: str, metric: str) -> list[dict[str, Any]
     col = "followers_gained" if metric == "followers" else metric
     lines = []
     for p in posts:
-        snaps = db.execute("SELECT * FROM post_snapshots WHERE post_id=? ORDER BY ts", (p["id"],)).fetchall()
+        snaps = db.execute("SELECT * FROM post_snapshots WHERE post_id=? AND ts >= ? AND ts < ? ORDER BY ts",
+                           (p["id"], from_ts, to_ts)).fetchall()
         points, mtype = [], None
         for s in snaps:
             if metric == "primary":
@@ -196,18 +211,29 @@ def _post_series(db, profile: str, key: str, metric: str) -> list[dict[str, Any]
 
 
 @router.get("/series")
-def get_series(profile: str, target: str = "channel", metric: str = "primary") -> dict[str, Any]:
+def get_series(profile: str, target: str = "channel", metric: str = "primary",
+               from_ts: Optional[int] = None, to_ts: Optional[int] = None, tz: str = "UTC") -> dict[str, Any]:
+    """``from_ts`` inclusive, ``to_ts`` exclusive, UTC epoch seconds; omitted = unbounded on that side."""
     if metric not in METRICS:
         return {"status": "error", "error": f"unknown metric {metric!r}; one of {', '.join(METRICS)}"}
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return {"status": "error", "error": f"unknown time zone {tz!r}"}
+    lo = 0 if from_ts is None else max(0, min(from_ts, MAX_TS))
+    hi = MAX_TS if to_ts is None else max(0, min(to_ts, MAX_TS))
+    if hi <= lo:
+        return {"status": "error", "error": "empty range: to_ts must be greater than from_ts"}
     db = _connect()
     if db is None:
         return _not_ready()
     with closing(db):
         if target == "channel":
-            lines = _channel_series(db, profile, metric)
+            lines = _channel_series(db, profile, metric, lo, hi, zone)
         else:
-            lines = _post_series(db, profile, target, metric)
-    return {"status": "ok", "profile": profile, "target": target, "metric": metric, "lines": lines}
+            lines = _post_series(db, profile, target, metric, lo, hi)
+    return {"status": "ok", "profile": profile, "target": target, "metric": metric,
+            "from_ts": from_ts, "to_ts": to_ts, "tz": tz, "lines": lines}
 
 
 @router.get("/health")

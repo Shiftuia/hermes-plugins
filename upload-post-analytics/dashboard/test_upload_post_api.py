@@ -8,7 +8,9 @@ from __future__ import annotations
 import importlib.util
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -163,3 +165,79 @@ def test_health_counts_last_24h_only(db):
     assert res["rate_limit"] == {"limit": 64, "min_remaining": 41, "count_429": 0}
     assert res["error_count"] == 1
     assert res["errors"][0]["error_code"] == "boom"
+
+
+JLM = ZoneInfo("Asia/Jerusalem")
+
+
+def _epoch(y, mo, d, h=0, mi=0, tz=JLM) -> int:
+    return int(datetime(y, mo, d, h, mi, tzinfo=tz).timestamp())
+
+
+@pytest.fixture
+def range_db(db):
+    """Hourly snapshots 2026-10-15..2026-11-05 (crosses the 2026-10-25 IDT->IST change) + daily dates."""
+    con = sqlite3.connect(db)
+    start, end = _epoch(2026, 10, 15), _epoch(2026, 11, 5)
+    con.executemany("INSERT INTO post_snapshots (post_id, ts, metric_type, views) VALUES (5, ?, 'views', ?)",
+                    [(ts, i) for i, ts in enumerate(range(start, end, 3600))])
+    con.executemany("INSERT INTO channel_snapshots (profile, platform, ts, metric_type, followers)"
+                    " VALUES ('brand', 'instagram', ?, 'reach', ?)",
+                    [(ts, i) for i, ts in enumerate(range(start, end, 3600))])
+    con.executemany("INSERT INTO channel_daily VALUES ('brand', 'instagram', 'reach', ?, 'reach', ?, 0)",
+                    [(f"2026-10-{d:02d}", d) for d in range(3, 32)] + [(f"2026-11-{d:02d}", d) for d in range(1, 6)])
+    con.commit()
+    con.close()
+    return db
+
+
+def _points(res, platform="instagram"):
+    return next(l for l in res["lines"] if l["platform"] == platform)["points"]
+
+
+def test_range_is_from_inclusive_to_exclusive(range_db):
+    t0 = _epoch(2026, 10, 16, 12)
+    res = plugin_api.get_series(profile="brand", target="p:5", metric="primary", from_ts=t0, to_ts=t0 + 3 * 3600)
+    assert [p[0] // 1000 for p in _points(res, "youtube")] == [t0, t0 + 3600, t0 + 7200]
+    res = plugin_api.get_series(profile="brand", target="p:5", metric="primary", from_ts=t0 + 1, to_ts=t0 + 3601)
+    assert [p[0] // 1000 for p in _points(res, "youtube")] == [t0 + 3600]
+    res = plugin_api.get_series(profile="brand", metric="followers", from_ts=t0, to_ts=t0 + 3600)
+    assert [p[0] // 1000 for p in _points(res)] == [t0]
+
+
+def test_dst_crossing_range_counts_absolute_hours(range_db):
+    # 2026-10-20 00:00 IDT -> 2026-10-30 00:00 IST is 10 calendar days but 241 real hours (clocks fall back 25 Oct).
+    t0, t1 = _epoch(2026, 10, 20), _epoch(2026, 10, 30)
+    assert t1 - t0 == 241 * 3600
+    snaps = _points(plugin_api.get_series(profile="brand", target="p:5", metric="primary",
+                                          from_ts=t0, to_ts=t1, tz="Asia/Jerusalem"), "youtube")
+    assert len(snaps) == 241
+    assert snaps[0][0] // 1000 == t0 and snaps[-1][0] // 1000 == t1 - 3600
+    assert len(_points(plugin_api.get_series(profile="brand", metric="followers", from_ts=t0, to_ts=t1))) == 241
+    daily = _points(plugin_api.get_series(profile="brand", metric="primary", from_ts=t0, to_ts=t1, tz="Asia/Jerusalem"))
+    assert [p[0] for p in daily] == [f"2026-10-{d}" for d in range(20, 30)]
+
+
+def test_daily_dates_are_never_shifted(range_db):
+    # Local midnight in UTC+3 is still the previous day in UTC; the date bound must follow the caller's zone.
+    t0 = _epoch(2026, 10, 5)
+    assert datetime.fromtimestamp(t0, timezone.utc).date().isoformat() == "2026-10-04"
+    res = plugin_api.get_series(profile="brand", metric="primary", from_ts=t0, to_ts=t0 + 86400, tz="Asia/Jerusalem")
+    assert _points(res) == [["2026-10-05", 5]]
+    # UTC-3, late evening: already the next day in UTC, still 2026-10-05 locally.
+    sp = ZoneInfo("America/Sao_Paulo")
+    t = _epoch(2026, 10, 5, 23, 30, tz=sp)
+    assert datetime.fromtimestamp(t, timezone.utc).date().isoformat() == "2026-10-06"
+    res = plugin_api.get_series(profile="brand", metric="primary", from_ts=t, to_ts=t + 60, tz="America/Sao_Paulo")
+    assert _points(res) == [["2026-10-05", 5]]
+    # Dates come back as the stored strings, untouched by tz.
+    for tz in ("UTC", "Asia/Jerusalem", "America/Sao_Paulo", "Pacific/Kiritimati"):
+        pts = _points(plugin_api.get_series(profile="brand", metric="primary", tz=tz))
+        assert pts[0] == ["2026-10-01", 7] and pts[-1] == ["2026-11-05", 5]
+
+
+def test_range_input_validation(range_db):
+    assert plugin_api.get_series(profile="brand", from_ts=100, to_ts=100)["status"] == "error"
+    assert plugin_api.get_series(profile="brand", tz="Nope/Zone")["status"] == "error"
+    assert plugin_api.get_series(profile="brand", tz="../../etc/passwd")["status"] == "error"
+    assert plugin_api.get_series(profile="brand", from_ts=-5, to_ts=10**15)["status"] == "ok"
