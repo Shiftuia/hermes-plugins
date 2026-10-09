@@ -215,9 +215,7 @@
 
   function postLabel(p) {
     const date = p.published_at ? new Date(p.published_at * 1000).toLocaleDateString() : "?";
-    const plats = p.platforms.map(function (x) { return x.platform; }).join(p.matched_by_time ? " ≈ " : "+");
-    const title = (p.title || "(untitled)").slice(0, 60);
-    return date + " · " + plats + " · " + title + (p.snapshots ? "" : " (no snapshots)");
+    return date + " · " + p.title + (p.snapshots ? "" : " (no snapshots)");
   }
 
   function UploadPostAnalyticsPage() {

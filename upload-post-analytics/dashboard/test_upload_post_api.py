@@ -24,7 +24,8 @@ CREATE TABLE accounts (profile TEXT, platform TEXT, connected INTEGER, reauth_re
   page_id TEXT, unsupported_note TEXT, updated_at INTEGER, PRIMARY KEY (profile, platform));
 CREATE TABLE posts (id INTEGER PRIMARY KEY, profile TEXT NOT NULL, platform TEXT NOT NULL,
   platform_post_id TEXT NOT NULL, request_id TEXT, url TEXT, title TEXT, published_at INTEGER, source TEXT,
-  first_seen INTEGER, last_attempt_at INTEGER, last_ok_at INTEGER, fail_streak INTEGER DEFAULT 0, last_error TEXT);
+  first_seen INTEGER, last_attempt_at INTEGER, last_ok_at INTEGER, fail_streak INTEGER DEFAULT 0, last_error TEXT,
+  media_type TEXT, content_id TEXT, content_title TEXT);
 CREATE TABLE post_snapshots (id INTEGER PRIMARY KEY, post_id INTEGER NOT NULL, ts INTEGER NOT NULL,
   metric_type TEXT, views REAL, reach REAL, impressions REAL, likes REAL, comments REAL,
   shares REAL, saves REAL, followers_gained REAL, extra TEXT);
@@ -51,13 +52,13 @@ def db(tmp_path, monkeypatch):
         ("brand", "instagram", 1, 0, "b", None, None, now),
         ("brand", "linkedin", 1, 0, "B", None, "LinkedIn only provides analytics for company pages", now),
     ])
-    con.executemany("INSERT INTO posts (id, profile, platform, platform_post_id, request_id, title, published_at)"
-                    " VALUES (?,?,?,?,?,?,?)", [
-        (1, "brand", "youtube", "yt1", "req-1", "Same video", now - 7200),
-        (2, "brand", "instagram", "ig1", "req-1", "", now - 7200),
-        (3, "brand", "instagram", "ig2", None, "Manual reel", now - 3600),
-        (4, "brand", "youtube", "yt2", None, "Manual short", now - 3300),
-        (5, "brand", "youtube", "yt3", None, "Unrelated", now - 86400),
+    con.executemany("INSERT INTO posts (id, profile, platform, platform_post_id, request_id, title, published_at,"
+                    " content_id, content_title, media_type) VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        (1, "brand", "youtube", "yt1", "req-1", "Same video", now - 7200, "HS-001", "Same video", "VIDEO"),
+        (2, "brand", "instagram", "ig1", "req-1", "", now - 7200, "HS-001", "Same video", "REEL"),
+        (3, "brand", "instagram", "ig2", None, "", now - 3600, None, None, "REEL"),
+        (4, "brand", "youtube", "yt2", None, "", now - 3300, None, None, "VIDEO"),
+        (5, "brand", "youtube", "yt3", None, "Unrelated", now - 86400, None, None, "VIDEO"),
     ])
     con.executemany("INSERT INTO post_snapshots (post_id, ts, metric_type, views, reach, likes) VALUES (?,?,?,?,?,?)", [
         (1, now - 3600, "views", 100, None, 5),
@@ -98,25 +99,28 @@ def test_db_is_opened_read_only(db):
     con.close()
 
 
-def test_options_group_cross_posts_by_request_id(db):
+def test_options_groups_by_content_id_then_request_id_then_lone(db):
     res = plugin_api.get_options()
     brand = res["profiles"][0]
     keys = {p["key"]: p for p in brand["posts"]}
-    assert set(keys) == {"r:req-1", "p:3,4", "p:5"}
-    assert sorted(x["platform"] for x in keys["r:req-1"]["platforms"]) == ["instagram", "youtube"]
-    assert keys["r:req-1"]["title"] == "Same video"
-    assert keys["p:3,4"]["matched_by_time"] and not keys["r:req-1"]["matched_by_time"]
+    assert set(keys) == {"c:HS-001", "p:3", "p:4", "p:5"}
+    assert sorted(x["platform"] for x in keys["c:HS-001"]["platforms"]) == ["instagram", "youtube"]
+    assert keys["c:HS-001"]["title"] == "HS-001 \u2014 Same video"
+    assert keys["c:HS-001"]["joined_by"] == "content_id"
+    assert keys["p:3"]["joined_by"] is None
+    # untitled lone post gets a distinguishable label, not a blank title
+    assert "Reel" in keys["p:3"]["title"] and "instagram" in keys["p:3"]["title"]
     assert [p["key"] for p in brand["posts"]][-1] == "p:5"  # newest first
     assert any(a["unsupported_note"] for a in brand["accounts"] if a["platform"] == "linkedin")
 
 
-def test_time_matched_group_returns_one_line_per_platform(db):
-    lines = plugin_api.get_series(profile="brand", target="p:3,4", metric="primary")["lines"]
-    assert [l["platform"] for l in lines] == ["instagram", "youtube"]
+def test_content_id_group_returns_one_line_per_platform(db):
+    lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")["lines"]
+    assert sorted(l["platform"] for l in lines) == ["instagram", "youtube"]
 
 
 def test_post_primary_series_keeps_each_platforms_metric_type(db):
-    res = plugin_api.get_series(profile="brand", target="r:req-1", metric="primary")
+    res = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")
     by_platform = {l["platform"]: l for l in res["lines"]}
     assert by_platform["youtube"]["metric_type"] == "views"
     assert [p[1] for p in by_platform["youtube"]["points"]] == [100, 160]
@@ -126,7 +130,7 @@ def test_post_primary_series_keeps_each_platforms_metric_type(db):
 
 
 def test_post_metric_skips_null_snapshots(db):
-    res = plugin_api.get_series(profile="brand", target="r:req-1", metric="likes")
+    res = plugin_api.get_series(profile="brand", target="c:HS-001", metric="likes")
     ig = next(l for l in res["lines"] if l["platform"] == "instagram")
     assert [p[1] for p in ig["points"]] == [2]
 

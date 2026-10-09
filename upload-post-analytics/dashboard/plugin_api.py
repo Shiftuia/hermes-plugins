@@ -17,6 +17,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,7 +30,6 @@ DB_PATH = Path("~/dev/services/_scripts/upload-post-analytics/data/upload_post_a
 METRICS = ("primary", "likes", "comments", "shares", "followers")
 PRIMARY_COLS = ("views", "reach", "impressions")
 HEALTH_WINDOW_SECONDS = 24 * 3600
-CROSSPOST_WINDOW_SECONDS = 15 * 60
 
 
 def _connect() -> Optional[sqlite3.Connection]:
@@ -45,32 +45,46 @@ def _not_ready() -> dict[str, Any]:
 
 
 def _group_posts(rows) -> list[list]:
-    """One group per logical post: shared request_id, else manual posts on distinct platforms
-    published within CROSSPOST_WINDOW_SECONDS of each other (Upload-Post gives them no link)."""
+    """One group per logical post: shared vault content_id, else shared Upload-Post request_id
+    (same multi-platform upload), else a lone post. No title or publish-time heuristics -- see
+    suggest_joins.py for a weekly SUGGESTIONS report on everything that doesn't join here."""
+    by_content: dict[tuple[str, str], list] = {}
     by_request: dict[tuple[str, str], list] = {}
-    manual: list[list] = []
-    for r in sorted(rows, key=lambda r: r["published_at"] or 0):
-        if r["request_id"]:
+    lone: list[list] = []
+    for r in rows:
+        if r["content_id"]:
+            by_content.setdefault((r["profile"], r["content_id"]), []).append(r)
+        elif r["request_id"]:
             by_request.setdefault((r["profile"], r["request_id"]), []).append(r)
-            continue
-        t = r["published_at"]
-        match = next((g for g in manual if t is not None and g[0]["published_at"] is not None
-                      and g[0]["profile"] == r["profile"]
-                      and t - g[0]["published_at"] <= CROSSPOST_WINDOW_SECONDS
-                      and r["platform"] not in {x["platform"] for x in g}), None)
-        if match is not None:
-            match.append(r)
         else:
-            manual.append([r])
-    groups = list(by_request.values()) + manual
+            lone.append([r])
+    groups = list(by_content.values()) + list(by_request.values()) + lone
     groups.sort(key=lambda g: max(x["published_at"] or 0 for x in g), reverse=True)
     return groups
 
 
 def _group_key(group) -> str:
+    if group[0]["content_id"]:
+        return f"c:{group[0]['content_id']}"
     if group[0]["request_id"]:
         return f"r:{group[0]['request_id']}"
     return "p:" + ",".join(str(x["id"]) for x in sorted(group, key=lambda x: x["id"]))
+
+
+def _media_kind(platform: str, media_type: Optional[str]) -> str:
+    if (media_type or "").upper() in ("VIDEO", "REEL", "REELS"):
+        return "Reel" if platform == "instagram" else "Video"
+    return "Photo"
+
+
+def _untitled_label(group) -> str:
+    """Several untitled posts must stay distinguishable in the picker: '<kind> · <platform> · <day>'."""
+    first = group[0]
+    day = (datetime.fromtimestamp(first["published_at"], tz=timezone.utc).strftime("%-d %b")
+           if first["published_at"] else "undated")
+    platforms = ",".join(sorted({x["platform"] for x in group}))
+    kind = _media_kind(first["platform"], first["media_type"])
+    return f"{kind} · {platforms} · {day}"
 
 
 @router.get("/options")
@@ -83,7 +97,8 @@ def get_options() -> dict[str, Any]:
             "SELECT profile, platform, connected, reauth_required, handle, unsupported_note"
             " FROM accounts ORDER BY profile, platform").fetchall()
         posts = db.execute(
-            "SELECT p.id, p.profile, p.platform, p.request_id, p.url, p.title,"
+            "SELECT p.id, p.profile, p.platform, p.request_id, p.url, p.title, p.media_type,"
+            " p.content_id, p.content_title,"
             " COALESCE(p.published_at, p.first_seen) AS published_at,"
             " (SELECT COUNT(*) FROM post_snapshots s WHERE s.post_id = p.id) AS snapshots"
             " FROM posts p").fetchall()
@@ -97,13 +112,15 @@ def get_options() -> dict[str, Any]:
         })
     for group in _group_posts(posts):
         prof = profiles.setdefault(group[0]["profile"], {"profile": group[0]["profile"], "accounts": [], "posts": []})
+        content_id = group[0]["content_id"]
+        title = group[0]["content_title"] if content_id else next((x["title"] for x in group if x["title"]), "")
         prof["posts"].append({
             "key": _group_key(group),
-            "title": next((x["title"] for x in group if x["title"]), ""),
+            "title": f"{content_id} \u2014 {title}" if content_id else (title or _untitled_label(group)),
             "published_at": min(x["published_at"] or 0 for x in group) or None,
             "platforms": [{"platform": x["platform"], "url": x["url"]} for x in group],
             "snapshots": sum(x["snapshots"] for x in group),
-            "matched_by_time": len(group) > 1 and not group[0]["request_id"],
+            "joined_by": "content_id" if content_id else ("request_id" if group[0]["request_id"] else None),
         })
     return {"status": "ok", "profiles": sorted(profiles.values(), key=lambda x: x["profile"]),
             "metrics": list(METRICS)}
@@ -151,7 +168,10 @@ def _channel_series(db, profile: str, metric: str) -> list[dict[str, Any]]:
 
 def _post_series(db, profile: str, key: str, metric: str) -> list[dict[str, Any]]:
     kind, _, ident = key.partition(":")
-    if kind == "r":
+    if kind == "c":
+        posts = db.execute("SELECT id, platform FROM posts WHERE profile=? AND content_id=? ORDER BY platform",
+                           (profile, ident)).fetchall()
+    elif kind == "r":
         posts = db.execute("SELECT id, platform FROM posts WHERE profile=? AND request_id=?", (profile, ident)).fetchall()
     elif kind == "p" and ident and all(x.isdigit() for x in ident.split(",")):
         ids = [int(x) for x in ident.split(",")]
