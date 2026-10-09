@@ -151,20 +151,27 @@
       }));
   }
 
-  function Chart({ lines, anyLines, hover, range }) {
-    const W = 900, H = 340, L = 56, R = 16, T = 12, B = 34;
-    const [cursor, setCursor] = hooks.useState(null);
-    const all = [];
-    lines.forEach(function (l) { l.pts.forEach(function (p) { all.push(p); }); });
-    if (all.length === 0) {
-      return h("div", { className: "upa-empty" },
-        anyLines && lines.length === 0 ? "All lines are hidden — click a legend item to show it." : "No data points in this range.");
-    }
+  const CHART = { W: 900, H: 340, L: 56, R: 16, T: 12, B: 34 };
+  // Every stored point is drawn in the path; per-point dots only on sparse lines, where they add information.
+  const MAX_DOTS = 120;
+  const NO_LINES = [];
+
+  function chartGeometry(lines, range) {
+    const W = CHART.W, H = CHART.H, L = CHART.L, R = CHART.R, T = CHART.T, B = CHART.B;
+    let n = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    lines.forEach(function (l) {
+      l.pts.forEach(function (p) {
+        n++;
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+      });
+    });
+    if (n === 0) return null;
     // Axis spans the selected range (absolute ms), widened only if a daily point's local midnight sits just before it.
-    let x0 = Math.min(range[0], Math.min.apply(null, all.map(function (p) { return p[0]; })));
-    let x1 = Math.max(range[1], Math.max.apply(null, all.map(function (p) { return p[0]; })));
-    let y0 = Math.min(0, Math.min.apply(null, all.map(function (p) { return p[1]; })));
-    let y1 = Math.max.apply(null, all.map(function (p) { return p[1]; }));
+    let x0 = Math.min(range[0], minX), x1 = Math.max(range[1], maxX);
+    let y0 = Math.min(0, minY), y1 = maxY;
     if (x1 === x0) { x0 -= 3600000; x1 += 3600000; }
     if (y1 === y0) y1 = y0 + 1;
     const raw = (y1 - y0) / 4;
@@ -177,20 +184,75 @@
     const yTicks = [];
     for (let v = y0; v <= y1 + step / 2; v += step) yTicks.push(v);
     const xTicks = [0, 1, 2, 3, 4].map(function (i) { return x0 + ((x1 - x0) * i) / 4; });
+    const paths = lines.map(function (l) {
+      let d = "";
+      for (let i = 0; i < l.pts.length; i++) d += (i ? "L" : "M") + sx(l.pts[i][0]).toFixed(1) + "," + sy(l.pts[i][1]).toFixed(1);
+      return d;
+    });
+    return { x0: x0, x1: x1, sx: sx, sy: sy, yTicks: yTicks, xTicks: xTicks, paths: paths };
+  }
+
+  // Nearest point at or around t in a time-sorted series (binary search).
+  function nearest(pts, t) {
+    let lo = 0, hi = pts.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid][0] < t) lo = mid + 1; else hi = mid;
+    }
+    return lo > 0 && t - pts[lo - 1][0] <= pts[lo][0] - t ? pts[lo - 1] : pts[lo];
+  }
+
+  function Chart({ lines, anyLines, hover, range }) {
+    const W = CHART.W, H = CHART.H, L = CHART.L, R = CHART.R, T = CHART.T, B = CHART.B;
+    const [cursor, setCursor] = hooks.useState(null);
+    const g = hooks.useMemo(function () { return chartGeometry(lines, range); }, [lines, range[0], range[1]]);
+    // The same element objects across cursor moves let React skip the whole static layer on hover.
+    const staticLayer = hooks.useMemo(function () {
+      if (!g) return null;
+      const sx = g.sx, sy = g.sy;
+      return [
+        g.yTicks.map(function (v, i) {
+          return h("g", { key: "y" + i },
+            h("line", { x1: L, x2: W - R, y1: sy(v), y2: sy(v), className: "upa-grid" }),
+            h("text", { x: L - 6, y: sy(v) + 4, textAnchor: "end", className: "upa-axis" }, fmtNum(v)));
+        }),
+        g.xTicks.map(function (v, i) {
+          return h("text", { key: "x" + i, x: sx(v), y: H - 10, textAnchor: i === 0 ? "start" : i === 4 ? "end" : "middle",
+            className: "upa-axis" }, fmtDate(v, g.x1 - g.x0));
+        }),
+      ];
+    }, [g]);
+    const seriesLayer = hooks.useMemo(function () {
+      if (!g) return null;
+      return lines.map(function (l, li) {
+        const cls = "upa-series" + (hover ? (hover === l.id ? " upa-focus" : " upa-dim") : "");
+        return h("g", { key: l.id, className: cls },
+          l.pts.length > 1 && h("path", { d: g.paths[li], stroke: l.color, strokeDasharray: l.dash || null, className: "upa-line" }),
+          l.pts.length <= MAX_DOTS && l.pts.map(function (p, i) {
+            return h("circle", { key: i, cx: g.sx(p[0]), cy: g.sy(p[1]), r: l.pts.length > 40 ? 1.5 : 3, fill: l.color });
+          }));
+      });
+    }, [g, lines, hover]);
+    if (!g) {
+      return h("div", { className: "upa-empty" },
+        anyLines && lines.length === 0 ? "All lines are hidden — click a legend item to show it." : "No data points in this range.");
+    }
+    const sx = g.sx, sy = g.sy, x0 = g.x0, x1 = g.x1;
 
     // Snap to the nearest timestamp; platforms in one collector tick land seconds apart, so match within 1% of the span.
     let tip = null;
     if (cursor != null) {
       const t = x0 + ((cursor - L) / (W - L - R)) * (x1 - x0);
-      let ts = all[0][0];
-      all.forEach(function (p) { if (Math.abs(p[0] - t) < Math.abs(ts - t)) ts = p[0]; });
+      let ts = null;
+      lines.forEach(function (l) {
+        const p = nearest(l.pts, t);
+        if (p && (ts == null || Math.abs(p[0] - t) < Math.abs(ts - t))) ts = p[0];
+      });
       const tol = (x1 - x0) / 100;
       tip = { ts: ts, rows: lines.map(function (l) {
-        let best = null;
-        l.pts.forEach(function (p) {
-          if (Math.abs(p[0] - ts) <= tol && (!best || Math.abs(p[0] - ts) < Math.abs(best[0] - ts))) best = p;
-        });
-        return { line: l, p: best };
+        const p = nearest(l.pts, ts);
+        return { line: l, p: p && Math.abs(p[0] - ts) <= tol ? p : null };
       }) };
     }
     const onMove = function (e) {
@@ -204,25 +266,9 @@
     return h("div", { className: "upa-plot" },
       h("svg", { className: "upa-chart", viewBox: "0 0 " + W + " " + H, role: "img",
         onPointerMove: onMove, onPointerLeave: function () { setCursor(null); } },
-        yTicks.map(function (v, i) {
-          return h("g", { key: "y" + i },
-            h("line", { x1: L, x2: W - R, y1: sy(v), y2: sy(v), className: "upa-grid" }),
-            h("text", { x: L - 6, y: sy(v) + 4, textAnchor: "end", className: "upa-axis" }, fmtNum(v)));
-        }),
-        xTicks.map(function (v, i) {
-          return h("text", { key: "x" + i, x: sx(v), y: H - 10, textAnchor: i === 0 ? "start" : i === 4 ? "end" : "middle",
-            className: "upa-axis" }, fmtDate(v, x1 - x0));
-        }),
+        staticLayer,
         tip && h("line", { x1: sx(tip.ts), x2: sx(tip.ts), y1: T, y2: H - B, className: "upa-cursor" }),
-        lines.map(function (l) {
-          const d = l.pts.map(function (p, i) { return (i ? "L" : "M") + sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1); }).join("");
-          const cls = "upa-series" + (hover ? (hover === l.id ? " upa-focus" : " upa-dim") : "");
-          return h("g", { key: l.id, className: cls },
-            l.pts.length > 1 && h("path", { d: d, stroke: l.color, strokeDasharray: l.dash || null, className: "upa-line" }),
-            l.pts.map(function (p, i) {
-              return h("circle", { key: i, cx: sx(p[0]), cy: sy(p[1]), r: l.pts.length > 40 ? 1.5 : 3, fill: l.color });
-            }));
-        }),
+        seriesLayer,
         tip && tip.rows.map(function (r) {
           return r.p && h("circle", { key: "c" + r.line.id, cx: sx(r.p[0]), cy: sy(r.p[1]), r: 5, fill: r.line.color,
             className: "upa-cursor-dot" });
@@ -376,6 +422,10 @@
         };
       });
     }, [series.data, mode]);
+    // Stable identity so the chart's memoised paths survive legend hover.
+    const visible = hooks.useMemo(function () {
+      return lines.filter(function (l) { return !hidden.has(l.id); });
+    }, [lines, hidden]);
 
     if (opts.data && opts.data.status !== "ok") {
       return h("div", { className: "upa-page" }, h("div", { className: "upa-health upa-bad" }, opts.data.error));
@@ -425,7 +475,7 @@
             "The dashboard backend predates the range filter, so all data is shown — restart the dashboard to apply the range."),
           h("div", { className: "upa-chart-box" },
             h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover }),
-            h(Chart, { lines: rangeValid ? lines.filter(function (l) { return !hidden.has(l.id); }) : [],
+            h(Chart, { lines: rangeValid ? visible : NO_LINES,
               anyLines: rangeValid && lines.length > 0, hover: hover, range: range })),
           h("div", { className: "upa-muted upa-note" },
             target === "channel" && metric === "primary"

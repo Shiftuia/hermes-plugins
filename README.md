@@ -71,6 +71,11 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
   `node --test upload-post-analytics/dashboard/test_panel_render.cjs` (renders `dist/index.js` in jsdom with
   hermes-agent's React; drives every range for channel and post against both the current and the
   pre-range `/series` shape).
+- Every stored point is drawn (no downsampling, backend or client); per-point dots only on lines with
+  <= 120 points in range, path `d` strings are memoised so hover only re-renders the cursor layer.
+  Hover bench: `node upload-post-analytics/dashboard/bench_hover.cjs [points-per-line]` (headless
+  Playwright Chromium, 6 lines). 2026-10-10 on thinkcentre, 6 x 4000 points: hover work p50 6.5 ms /
+  p95 11.9 ms, frame interval p50 16.7 ms (before: 24k circles, 56 ms per move).
 - The page is wrapped in an error boundary: a render exception shows the message + stack instead of a
   blank tab. If the backend predates the range filter (dashboard not restarted after an update), the
   panel still renders and says the range is not applied until a restart.

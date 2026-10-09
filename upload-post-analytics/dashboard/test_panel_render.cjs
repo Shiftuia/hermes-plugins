@@ -100,11 +100,11 @@ async function mount({ series = seriesNew, brokenCard = false } = {}) {
     });
   };
   const click = (el) => act(() => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true })));
-  const hover = async () => {
+  const hover = async (clientX = 600) => {
     const svg = $("svg.upa-chart");
     if (!svg) return;
     svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 340 });
-    await act(() => svg.dispatchEvent(new w.MouseEvent("pointermove", { bubbles: true, clientX: 600 })));
+    await act(() => svg.dispatchEvent(new w.MouseEvent("pointermove", { bubbles: true, clientX })));
   };
   const alive = (what) => {
     assert.deepEqual(errors.map((e) => String(e && e.stack || e)), [], what + ": render errors");
@@ -133,7 +133,7 @@ async function mount({ series = seriesNew, brokenCard = false } = {}) {
     alive(what + " / custom inverted");
     assert.ok(container.textContent.includes("must be after"), what + ": inverted range not flagged");
   }
-  return { container, errors, $, $$, setValue, act, alive, everyRange, unmount: () => act(() => root.unmount()) };
+  return { container, errors, $, $$, setValue, act, click, hover, alive, everyRange, unmount: () => act(() => root.unmount()) };
 }
 
 for (const [name, series] of [["current backend", seriesNew], ["pre-range backend (not restarted)", seriesOld]]) {
@@ -152,6 +152,25 @@ for (const [name, series] of [["current backend", seriesNew], ["pre-range backen
 test("old backend response is flagged instead of silently ignoring the range", async () => {
   const p = await mount({ series: seriesOld });
   assert.match(p.container.textContent, /restart the dashboard/i);
+  await p.unmount();
+});
+
+test("every point is in the path; per-point dots only on lines with <= 120 points", async () => {
+  const dense = (q) => Object.assign(seriesNew(q), { lines: [
+    { platform: "instagram", metric_type: "reach", kind: "total", points: snaps(20) },
+    { platform: "youtube", metric_type: "views", kind: "total", points: snaps(121) }] });
+  const p = await mount({ series: dense });
+  await p.setValue(p.$$("select")[1], POST.key, "change");
+  const pick = (label) => p.click(p.$$('[aria-label="Time range"] button').find((b) => b.textContent === label));
+  await pick("1 year");
+  p.alive("dense");
+  const groups = p.$$("g.upa-series");
+  assert.equal(groups.length, 2);
+  const segs = groups.map((g) => (g.querySelector("path").getAttribute("d").match(/[ML]/g) || []).length);
+  assert.deepEqual(segs, [20, 121]);
+  assert.deepEqual(groups.map((g) => g.querySelectorAll("circle").length), [20, 0]);
+  await p.hover(880);
+  assert.equal(p.$$("circle.upa-cursor-dot").length, 2, "hover marker per visible line");
   await p.unmount();
 });
 
