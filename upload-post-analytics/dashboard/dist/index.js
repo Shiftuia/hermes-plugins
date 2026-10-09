@@ -80,6 +80,12 @@
     const m = date.split("-");
     return new Date(+m[0], m[1] - 1, +m[2]).getTime();
   }
+  // A backend mounted before aa346fe (dashboard not restarted yet) sends daily points as local-midnight epoch ms.
+  function dailyDate(v) {
+    if (typeof v === "string") return v;
+    const d = new Date(v);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
 
   // daily → running sum / as-is; total → as-is / consecutive diff; window → as-is either way.
   function transform(line, mode) {
@@ -356,7 +362,7 @@
       if (!d || d.status !== "ok") return [];
       return d.lines.map(function (l) {
         const src = l.kind === "daily" ? Object.assign({}, l, {
-          points: l.points.map(function (p) { return [dateX(p[0]), p[1], p[0]]; }) }) : l;
+          points: l.points.map(function (p) { const day = dailyDate(p[0]); return [dateX(day), p[1], day]; }) }) : l;
         const pts = transform(src, mode);
         return {
           id: l.platform + ":" + l.metric_type,
@@ -415,6 +421,8 @@
             range: range, valid: rangeValid }),
           series.error && h("div", { className: "upa-health upa-bad" }, series.error),
           series.data && series.data.status !== "ok" && h("div", { className: "upa-health upa-bad" }, series.data.error),
+          series.data && series.data.status === "ok" && !("from_ts" in series.data) && h("div", { className: "upa-health upa-bad" },
+            "The dashboard backend predates the range filter, so all data is shown — restart the dashboard to apply the range."),
           h("div", { className: "upa-chart-box" },
             h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover }),
             h(Chart, { lines: rangeValid ? lines.filter(function (l) { return !hidden.has(l.id); }) : [],
@@ -430,5 +438,23 @@
               .concat(unsupported.map(function (a) { return a.platform + ": " + a.unsupported_note; })).join(" · ")))));
   }
 
-  window.__HERMES_PLUGINS__.register("upload-post-analytics", UploadPostAnalyticsPage);
+  // A render exception would otherwise unmount the whole tab and leave a blank page.
+  class CrashBoundary extends React.Component {
+    constructor(props) { super(props); this.state = { error: null }; }
+    static getDerivedStateFromError(error) { return { error: error }; }
+    render() {
+      const e = this.state.error;
+      if (!e) return this.props.children;
+      const self = this;
+      return h("div", { className: "upa-page" },
+        h("div", { className: "upa-health upa-bad upa-crash", role: "alert" },
+          h("b", null, "Post analytics crashed: "), String((e && e.message) || e),
+          e && e.stack && h("pre", { className: "upa-crash-stack" }, String(e.stack).split("\n").slice(0, 6).join("\n")),
+          h(C.Button, { onClick: function () { self.setState({ error: null }); } }, "Retry")));
+    }
+  }
+
+  window.__HERMES_PLUGINS__.register("upload-post-analytics", function UploadPostAnalytics() {
+    return h(CrashBoundary, null, h(UploadPostAnalyticsPage));
+  });
 })();

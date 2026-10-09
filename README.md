@@ -67,7 +67,13 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
 - Routes: `GET /options`, `/series?profile=&target=channel|c:<content_id>|r:<request_id>|p:<ids>&metric=&from_ts=&to_ts=&tz=`, `/health`.
 - Needs `upload-post-analytics` in `plugins.enabled` (config.yaml) and a dashboard restart to mount
   the backend. Tests: `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest
-  upload-post-analytics/dashboard provider-usage/dashboard`.
+  upload-post-analytics/dashboard provider-usage/dashboard` and
+  `node --test upload-post-analytics/dashboard/test_panel_render.cjs` (renders `dist/index.js` in jsdom with
+  hermes-agent's React; drives every range for channel and post against both the current and the
+  pre-range `/series` shape).
+- The page is wrapped in an error boundary: a render exception shows the message + stack instead of a
+  blank tab. If the backend predates the range filter (dashboard not restarted after an update), the
+  panel still renders and says the range is not applied until a restart.
 
 ### kanban-delivery-gate
 

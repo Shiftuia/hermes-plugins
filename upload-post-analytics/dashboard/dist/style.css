@@ -46,6 +46,7 @@
 .upa-errors { font-size: 0.75rem; border-collapse: collapse; width: 100%; }
 .upa-errors td { padding: 0.2rem 0.5rem; border-top: 1px solid rgba(255, 255, 255, 0.08); vertical-align: top; }
 .upa-err-msg { max-width: 40rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upa-crash-stack { flex-basis: 100%; margin: 0; font-size: 0.7rem; white-space: pre-wrap; opacity: 0.8; }
 .upa-range-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .upa-range .upa-toggle { flex-wrap: wrap; }
 .upa-custom { display: inline-flex; gap: 0.4rem; align-items: center; }
