@@ -1,7 +1,7 @@
 """Regression tests for provider-usage's Antigravity (agy) usage card.
 
 Run with the Hermes venv's pytest (this module needs the same interpreter that has the
-dashboard's dependencies importable): `.hermes/hermes-agent/venv/bin/pytest dashboard/test_plugin_api.py`.
+dashboard's dependencies importable): `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest dashboard/test_plugin_api.py`.
 """
 
 from __future__ import annotations

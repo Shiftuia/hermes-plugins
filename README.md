@@ -40,6 +40,26 @@ spinner until its own fetch resolves.
   populate the "every key on the account" table. Without it, the Hermes-runtime-key card still
   works; only the account-wide keys table degrades to "not configured".
 
+### upload-post-analytics
+
+Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-Post collector
+(`~/dev/services/_scripts/upload-post-analytics`, shared thinkcentre-scripts repo). Read-only
+(`mode=ro`), never calls the Upload-Post API.
+
+- Selectors: profile → channel overall or a single post; metric (views/reach/impressions, likes,
+  comments, shares, followers); cumulative vs per-interval.
+- One line per platform, labelled with its own `metric_type` — reach, views and impressions are never
+  summed. Cross-posts are grouped by Upload-Post `request_id`; manual posts (no `request_id`) on different
+  platforms published within 15 min of each other are grouped by time and shown with `≈`.
+- Channel views/reach come from the daily series (cumulative = running sum); post metrics and channel
+  followers are lifetime counters (per-interval = diff between snapshots); channel likes/comments/shares
+  are Upload-Post's rolling 30-day totals and are shown as-is in both modes.
+- Strip on top: last 24 h ticks, requests, min `X-RateLimit-Remaining`, 429 count, latest errors.
+- Routes: `GET /options`, `/series?profile=&target=channel|r:<request_id>|p:<ids>&metric=`, `/health`.
+- Needs `upload-post-analytics` in `plugins.enabled` (config.yaml) and a dashboard restart to mount
+  the backend. Tests: `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest
+  upload-post-analytics/dashboard provider-usage/dashboard`.
+
 ### kanban-delivery-gate
 
 Scaffolding only — a `tests/` directory with no implementation yet. Not a dashboard plugin
