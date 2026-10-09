@@ -15,9 +15,28 @@
 .upa-axis { fill: currentColor; opacity: 0.6; font-size: 11px; }
 .upa-line { fill: none; stroke-width: 2; }
 .upa-empty { padding: 3rem 1rem; text-align: center; opacity: 0.6; }
-.upa-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; font-size: 0.8rem; }
-.upa-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
-.upa-swatch { width: 0.75rem; height: 0.75rem; border-radius: 2px; display: inline-block; }
+.upa-chart-box { display: flex; flex-direction: column; gap: 0.5rem; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 0.5rem; padding: 0.6rem 0.6rem 0.25rem; }
+.upa-legend { display: flex; flex-wrap: wrap; gap: 0.35rem; font-size: 0.8rem; }
+.upa-legend-item { display: inline-flex; align-items: center; gap: 0.4rem; max-width: 100%; min-width: 0; padding: 0.2rem 0.55rem; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 0.375rem; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
+.upa-legend-item:hover, .upa-legend-item:focus-visible { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.3); }
+.upa-legend-item.upa-off { opacity: 0.45; }
+.upa-legend-item.upa-off .upa-legend-name, .upa-legend-item.upa-off .upa-legend-metric { text-decoration: line-through; }
+.upa-legend-name, .upa-cap { text-transform: capitalize; }
+.upa-legend-name { font-weight: 600; }
+.upa-legend-metric { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.upa-legend-value { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: 0.15rem; }
+.upa-swatch { width: 1.5rem; height: 0.65rem; flex: none; display: inline-block; }
+.upa-plot { position: relative; touch-action: pan-y; }
+.upa-series { transition: opacity 120ms; }
+.upa-series.upa-dim { opacity: 0.15; }
+.upa-series.upa-focus .upa-line { stroke-width: 3; }
+.upa-cursor { stroke: currentColor; opacity: 0.35; stroke-dasharray: 3 3; }
+.upa-cursor-dot { stroke: #111; stroke-width: 1.5; pointer-events: none; }
+.upa-tip { position: absolute; top: 0.5rem; margin-left: 0.75rem; pointer-events: none; z-index: 2; min-width: 10rem; max-width: 18rem; padding: 0.4rem 0.6rem; border-radius: 0.375rem; font-size: 0.75rem; background: rgba(20, 20, 24, 0.95); border: 1px solid rgba(255, 255, 255, 0.15); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4); }
+.upa-tip.upa-tip-left { transform: translateX(-100%); margin-left: -0.75rem; }
+.upa-tip-date { opacity: 0.7; margin-bottom: 0.25rem; }
+.upa-tip-row { display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+.upa-tip-row b { margin-left: auto; padding-left: 0.75rem; font-variant-numeric: tabular-nums; }
 .upa-note { line-height: 1.4; }
 .upa-health-wrap { display: flex; flex-direction: column; gap: 0.5rem; }
 .upa-health { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; font-size: 0.8rem; }

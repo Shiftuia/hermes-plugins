@@ -49,7 +49,9 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
 - Selectors: profile → channel overall or a single post; metric (views/reach/impressions, likes,
   comments, shares, followers); cumulative vs per-interval.
 - One line per platform, labelled with its own `metric_type` — reach, views and impressions are never
-  summed. Cross-posts are grouped by Upload-Post `request_id`; manual posts (no `request_id`) on different
+  summed. Legend sits on top of the chart: click an item to hide/show its line, hover to highlight it;
+  hovering the plot shows date + every visible line's value. Dashed = rolling 30-day window series.
+  Cross-posts are grouped by Upload-Post `request_id`; manual posts (no `request_id`) on different
   platforms published within 15 min of each other are grouped by time and shown with `≈`.
 - Channel views/reach come from the daily series (cumulative = running sum); post metrics and channel
   followers are lifetime counters (per-interval = diff between snapshots); channel likes/comments/shares

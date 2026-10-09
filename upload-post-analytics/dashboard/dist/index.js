@@ -76,12 +76,39 @@
     return spanMs < 3 * 86400000 ? day + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : day;
   }
 
-  function Chart({ lines }) {
+  function Swatch({ line }) {
+    return h("svg", { className: "upa-swatch", viewBox: "0 0 24 10", "aria-hidden": true },
+      h("line", { x1: 1, x2: 23, y1: 5, y2: 5, stroke: line.color, strokeWidth: 2.5, strokeDasharray: line.dash || null }),
+      h("circle", { cx: 12, cy: 5, r: 2.5, fill: line.color }));
+  }
+
+  function Legend({ lines, hidden, toggle, setHover }) {
+    if (lines.length === 0) return h("div", { className: "upa-legend upa-muted" }, "No series for this selection.");
+    return h("div", { className: "upa-legend", role: "group", "aria-label": "Chart legend: click an item to show or hide its line" },
+      lines.map(function (l) {
+        const off = hidden.has(l.id);
+        return h("button", {
+          key: l.id, type: "button", className: "upa-legend-item" + (off ? " upa-off" : ""), "aria-pressed": !off,
+          title: (off ? "Show " : "Hide ") + l.platform + " " + l.metric,
+          onClick: function () { toggle(l.id); },
+          onMouseEnter: function () { if (!off) setHover(l.id); }, onMouseLeave: function () { setHover(null); },
+          onFocus: function () { if (!off) setHover(l.id); }, onBlur: function () { setHover(null); },
+        },
+          h(Swatch, { line: l }),
+          h("span", { className: "upa-legend-name" }, l.platform),
+          h("span", { className: "upa-legend-metric" }, l.metric + (l.kind === "window" ? " · 30-day window" : "")),
+          h("span", { className: "upa-legend-value" }, fmtNum(l.last)));
+      }));
+  }
+
+  function Chart({ lines, anyLines, hover }) {
     const W = 900, H = 340, L = 56, R = 16, T = 12, B = 34;
+    const [cursor, setCursor] = hooks.useState(null);
     const all = [];
     lines.forEach(function (l) { l.pts.forEach(function (p) { all.push(p); }); });
     if (all.length === 0) {
-      return h("div", { className: "upa-empty" }, "No data points for this selection yet.");
+      return h("div", { className: "upa-empty" },
+        anyLines && lines.length === 0 ? "All lines are hidden — click a legend item to show it." : "No data points for this selection yet.");
     }
     let x0 = Math.min.apply(null, all.map(function (p) { return p[0]; }));
     let x1 = Math.max.apply(null, all.map(function (p) { return p[0]; }));
@@ -99,25 +126,63 @@
     const yTicks = [];
     for (let v = y0; v <= y1 + step / 2; v += step) yTicks.push(v);
     const xTicks = [0, 1, 2, 3, 4].map(function (i) { return x0 + ((x1 - x0) * i) / 4; });
-    return h("svg", { className: "upa-chart", viewBox: "0 0 " + W + " " + H, role: "img" },
-      yTicks.map(function (v, i) {
-        return h("g", { key: "y" + i },
-          h("line", { x1: L, x2: W - R, y1: sy(v), y2: sy(v), className: "upa-grid" }),
-          h("text", { x: L - 6, y: sy(v) + 4, textAnchor: "end", className: "upa-axis" }, fmtNum(v)));
-      }),
-      xTicks.map(function (v, i) {
-        return h("text", { key: "x" + i, x: sx(v), y: H - 10, textAnchor: i === 0 ? "start" : i === 4 ? "end" : "middle",
-          className: "upa-axis" }, fmtDate(v, x1 - x0));
-      }),
-      lines.map(function (l) {
-        const d = l.pts.map(function (p, i) { return (i ? "L" : "M") + sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1); }).join("");
-        return h("g", { key: l.id },
-          l.pts.length > 1 && h("path", { d: d, stroke: l.color, className: "upa-line" }),
-          l.pts.map(function (p, i) {
-            return h("circle", { key: i, cx: sx(p[0]), cy: sy(p[1]), r: l.pts.length > 40 ? 1.5 : 3, fill: l.color },
-              h("title", null, l.label + " — " + new Date(p[0]).toLocaleString() + ": " + fmtNum(p[1])));
-          }));
-      }));
+
+    // Snap to the nearest timestamp; platforms in one collector tick land seconds apart, so match within 1% of the span.
+    let tip = null;
+    if (cursor != null) {
+      const t = x0 + ((cursor - L) / (W - L - R)) * (x1 - x0);
+      let ts = all[0][0];
+      all.forEach(function (p) { if (Math.abs(p[0] - t) < Math.abs(ts - t)) ts = p[0]; });
+      const tol = (x1 - x0) / 100;
+      tip = { ts: ts, rows: lines.map(function (l) {
+        let best = null;
+        l.pts.forEach(function (p) {
+          if (Math.abs(p[0] - ts) <= tol && (!best || Math.abs(p[0] - ts) < Math.abs(best[0] - ts))) best = p;
+        });
+        return { line: l, p: best };
+      }) };
+    }
+    const onMove = function (e) {
+      const r = e.currentTarget.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * W;
+      setCursor(x < L || x > W - R ? null : x);
+    };
+    const tipLeft = tip ? (sx(tip.ts) / W) * 100 : 0;
+
+    return h("div", { className: "upa-plot" },
+      h("svg", { className: "upa-chart", viewBox: "0 0 " + W + " " + H, role: "img",
+        onPointerMove: onMove, onPointerLeave: function () { setCursor(null); } },
+        yTicks.map(function (v, i) {
+          return h("g", { key: "y" + i },
+            h("line", { x1: L, x2: W - R, y1: sy(v), y2: sy(v), className: "upa-grid" }),
+            h("text", { x: L - 6, y: sy(v) + 4, textAnchor: "end", className: "upa-axis" }, fmtNum(v)));
+        }),
+        xTicks.map(function (v, i) {
+          return h("text", { key: "x" + i, x: sx(v), y: H - 10, textAnchor: i === 0 ? "start" : i === 4 ? "end" : "middle",
+            className: "upa-axis" }, fmtDate(v, x1 - x0));
+        }),
+        tip && h("line", { x1: sx(tip.ts), x2: sx(tip.ts), y1: T, y2: H - B, className: "upa-cursor" }),
+        lines.map(function (l) {
+          const d = l.pts.map(function (p, i) { return (i ? "L" : "M") + sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1); }).join("");
+          const cls = "upa-series" + (hover ? (hover === l.id ? " upa-focus" : " upa-dim") : "");
+          return h("g", { key: l.id, className: cls },
+            l.pts.length > 1 && h("path", { d: d, stroke: l.color, strokeDasharray: l.dash || null, className: "upa-line" }),
+            l.pts.map(function (p, i) {
+              return h("circle", { key: i, cx: sx(p[0]), cy: sy(p[1]), r: l.pts.length > 40 ? 1.5 : 3, fill: l.color });
+            }));
+        }),
+        tip && tip.rows.map(function (r) {
+          return r.p && h("circle", { key: "c" + r.line.id, cx: sx(r.p[0]), cy: sy(r.p[1]), r: 5, fill: r.line.color,
+            className: "upa-cursor-dot" });
+        })),
+      tip && h("div", { className: "upa-tip" + (tipLeft > 60 ? " upa-tip-left" : ""), style: { left: tipLeft + "%" } },
+        h("div", { className: "upa-tip-date" }, fmtDate(tip.ts, x1 - x0)),
+        tip.rows.map(function (r) {
+          return h("div", { key: r.line.id, className: "upa-tip-row" },
+            h(Swatch, { line: r.line }),
+            h("span", null, h("span", { className: "upa-cap" }, r.line.platform), " " + r.line.metric),
+            h("b", null, r.p ? fmtNum(r.p[1]) : "—"));
+        })));
   }
 
   function HealthStrip({ q }) {
@@ -161,6 +226,12 @@
     const [target, setTarget] = hooks.useState("channel");
     const [metric, setMetric] = hooks.useState("primary");
     const [mode, setMode] = hooks.useState("cumulative");
+    const [hidden, setHidden] = hooks.useState(function () { return new Set(); });
+    const [hover, setHover] = hooks.useState(null);
+    const toggle = function (id) {
+      setHidden(function (prev) { const next = new Set(prev); if (!next.delete(id)) next.add(id); return next; });
+      setHover(null);
+    };
 
     const profiles = (opts.data && opts.data.profiles) || [];
     hooks.useEffect(function () {
@@ -184,8 +255,10 @@
         const pts = transform(l, mode);
         return {
           id: l.platform + ":" + l.metric_type,
-          label: l.platform + " · " + l.metric_type + (l.kind === "window" ? " (30-day window)" : ""),
+          platform: l.platform,
+          metric: l.metric_type,
           color: COLORS[l.platform] || "#c9a227",
+          dash: l.kind === "window" ? "6 4" : null,
           pts: pts,
           last: pts.length ? pts[pts.length - 1][1] : null,
           kind: l.kind,
@@ -232,17 +305,14 @@
                 })))),
           series.error && h("div", { className: "upa-health upa-bad" }, series.error),
           series.data && series.data.status !== "ok" && h("div", { className: "upa-health upa-bad" }, series.data.error),
-          h(Chart, { lines: lines }),
-          h("div", { className: "upa-legend" }, lines.map(function (l) {
-            return h("span", { key: l.id, className: "upa-legend-item" },
-              h("span", { className: "upa-swatch", style: { background: l.color } }),
-              l.label + " — latest " + fmtNum(l.last));
-          })),
+          h("div", { className: "upa-chart-box" },
+            h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover }),
+            h(Chart, { lines: lines.filter(function (l) { return !hidden.has(l.id); }), anyLines: lines.length > 0, hover: hover })),
           h("div", { className: "upa-muted upa-note" },
             target === "channel" && metric === "primary"
               ? "Daily series from Upload-Post (last 30 days, kept by the collector beyond that). Each platform reports its own metric type; they are never summed."
               : target === "channel" && metric !== "followers"
-              ? "Channel likes/comments/shares are Upload-Post's rolling 30-day totals per snapshot, shown as-is."
+              ? "Channel likes/comments/shares are Upload-Post's rolling 30-day totals per snapshot (dashed), shown as-is."
               : "Snapshots taken by the collector; per-interval = change between consecutive snapshots."),
           (unsupported.length > 0 || disconnected.length > 0) && h("div", { className: "upa-muted upa-note" },
             disconnected.map(function (a) { return a.platform + ": " + (a.reauth_required ? "needs re-auth" : "not connected"); })
