@@ -34,6 +34,19 @@ const HEALTH = { status: "ok", window_hours: 24, runs: { count: 3, failed: 0, re
   last_run: { started_at: NOW / 1000 - 60, finished_at: NOW / 1000 - 50, status: "ok" },
   rate_limit: { limit: 64, min_remaining: 40, count_429: 0 }, error_count: 0, errors: [] };
 const snaps = (n) => Array.from({ length: n }, (_, i) => [NOW - (n - i) * 6 * 3600000, 100 + i * 10]);
+const NOW_S = Math.floor(NOW / 1000);
+const SCHEDULED = { status: "ok", now: NOW_S, collecting: true,
+  links: { upcoming: "https://app.upload-post.com/calendar", recent: "https://app.upload-post.com/upload-history" },
+  upcoming: [{ job_id: "j1", profile: "holyshifted", scheduled_at: NOW_S + 7 * 3600 + 12 * 60, external_id: "HS-2026-030",
+    title: "Three free models", post_type: "video", source_filename: "v.mp4", original_timezone: "Asia/Jerusalem",
+    cover_url: "https://c/1.jpg", status: null, status_message: null, gone_at: null,
+    platform_content: { youtube: { title: "YT title", caption: "YT description" }, instagram: { title: "", caption: "IG caption" } },
+    platforms: [{ platform: "youtube", state: "selected", result: null }, { platform: "instagram", state: "selected", result: null },
+      { platform: "linkedin", state: "not_selected", result: null }, { platform: "tiktok", state: "manual", result: null }] }],
+  recent: [{ job_id: "j0", profile: "holyshifted", scheduled_at: NOW_S - 86400, external_id: null, title: "Older post",
+    post_type: "video", cover_url: null, status: "completed", status_message: null, gone_at: NOW_S - 86000, platform_content: {},
+    platforms: [{ platform: "youtube", state: "selected", result: { status: "completed", post_url: "https://youtube.com/shorts/a", error: null } },
+      { platform: "instagram", state: "selected", result: { status: "failed", post_url: null, error: "Video too long" } }] }] };
 
 // Current backend: daily points are "YYYY-MM-DD" strings and the range is echoed back.
 function seriesNew(q) {
@@ -53,7 +66,7 @@ function seriesOld(q) {
       : Object.assign({}, l, { points: l.points.map((p) => [new Date(p[0] + "T00:00:00").getTime(), p[1]]) })) };
 }
 
-async function mount({ series = seriesNew, brokenCard = false } = {}) {
+async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHEDULED } = {}) {
   const dom = new JSDOM("<!doctype html><div id=root></div>", { runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   useWindow(w);
@@ -70,7 +83,8 @@ async function mount({ series = seriesNew, brokenCard = false } = {}) {
     fetchJSON: (url) => {
       const u = new URL(url, "http://x");
       const route = u.pathname.replace("/api/plugins/upload-post-analytics", "");
-      const body = route === "/options" ? OPTIONS : route === "/health" ? HEALTH : route === "/series" ? series(u.searchParams) : null;
+      const body = route === "/options" ? OPTIONS : route === "/health" ? HEALTH : route === "/series" ? series(u.searchParams)
+        : route === "/scheduled" ? scheduled : null;
       return body ? Promise.resolve(JSON.parse(JSON.stringify(body))) : Promise.reject(new Error("404 " + route));
     },
     components: {
@@ -171,6 +185,49 @@ test("every point is in the path; per-point dots only on lines with <= 120 point
   assert.deepEqual(groups.map((g) => g.querySelectorAll("circle").length), [20, 0]);
   await p.hover(880);
   assert.equal(p.$$("circle.upa-cursor-dot").length, 2, "hover marker per visible line");
+  await p.unmount();
+});
+
+test("scheduled list: Jerusalem time, relative, icon states, expand, recent results", async (t) => {
+  const p = await mount();
+  t.after(() => p.unmount());
+  const rows = p.$$(".upa-job-row");
+  assert.equal(rows.length, 2);
+  const up = rows[0];
+  const slot = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jerusalem", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+    .format(new Date(SCHEDULED.upcoming[0].scheduled_at * 1000));
+  assert.ok(up.textContent.includes(slot), "local slot time missing: " + up.textContent);
+  assert.match(up.textContent, /I[DS]T/);
+  assert.match(up.textContent, /in 7 h 1[12] min/);
+  assert.match(up.textContent, /holyshifted/);
+  assert.match(up.textContent, /HS-2026-030/);
+  const icons = [...up.querySelectorAll(".upa-pi")];
+  assert.deepEqual(icons.map((i) => i.className.split(" ")[1]),
+    ["upa-pi-selected", "upa-pi-selected", "upa-pi-not_selected", "upa-pi-manual"]);
+  assert.match(icons[2].getAttribute("title"), /linkedin: not selected/);
+  assert.match(icons[3].getAttribute("title"), /manual/);
+  assert.ok(icons[0].querySelector("svg path"), "youtube should render its vendored SVG");
+  assert.equal(up.querySelector("a.upa-job-link").getAttribute("href"), "https://app.upload-post.com/calendar");
+  assert.equal(p.$(".upa-job-details"), null);
+  await p.click(up);
+  const details = p.$(".upa-job-details");
+  assert.ok(details, "row did not expand");
+  assert.match(details.textContent, /YT description/);
+  assert.match(details.textContent, /IG caption/);
+  assert.equal(details.querySelector("img").getAttribute("src"), "https://c/1.jpg");
+  const recent = p.$$(".upa-job-row")[1];
+  const links = [...recent.querySelectorAll("a.upa-pi")];
+  assert.deepEqual(links.map((a) => a.getAttribute("href")), ["https://youtube.com/shorts/a"]);
+  const failed = [...recent.querySelectorAll(".upa-pi")].find((i) => /instagram/.test(i.getAttribute("title")));
+  assert.match(failed.getAttribute("title"), /failed — Video too long/);
+  assert.ok(failed.className.includes("upa-res-failed"));
+  assert.match(recent.textContent, /1 d ago/);
+});
+
+test("scheduled route missing on a not-restarted backend says so, page keeps working", async () => {
+  const p = await mount({ scheduled: null });
+  p.alive("no /scheduled");
+  assert.match(p.container.textContent, /needs a dashboard restart/);
   await p.unmount();
 });
 

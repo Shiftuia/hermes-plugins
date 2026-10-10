@@ -6,6 +6,7 @@ Run with the Hermes venv: `~/.hermes/hermes-agent/venv/bin/pytest upload-post-an
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -90,8 +91,79 @@ def db(tmp_path, monkeypatch):
 
 def test_missing_db_reports_not_configured(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_api, "DB_PATH", tmp_path / "nope.db")
-    for result in (plugin_api.get_options(), plugin_api.get_series(profile="x"), plugin_api.get_health()):
+    for result in (plugin_api.get_options(), plugin_api.get_series(profile="x"), plugin_api.get_health(),
+                   plugin_api.get_scheduled()):
         assert result["status"] == "not_configured"
+
+
+JOB_SCHEMA = """
+CREATE TABLE scheduled_jobs (
+  job_id TEXT PRIMARY KEY, profile TEXT, scheduled_at INTEGER, post_type TEXT, title TEXT, external_id TEXT,
+  source_filename TEXT, platforms TEXT, platform_content TEXT, has_cover INTEGER, cover_preview_url TEXT,
+  thumbnail_url TEXT, original_timezone TEXT, first_seen INTEGER, last_seen INTEGER, gone_at INTEGER,
+  status TEXT, status_final INTEGER DEFAULT 0, status_checked_at INTEGER, status_message TEXT);
+CREATE TABLE scheduled_results (
+  job_id TEXT, platform TEXT, status TEXT, post_url TEXT, error TEXT, upload_ts INTEGER, updated_at INTEGER,
+  PRIMARY KEY (job_id, platform));
+"""
+
+
+@pytest.fixture
+def jobs_db(db):
+    con = sqlite3.connect(db)
+    con.executescript(JOB_SCHEMA)
+    now = int(time.time())
+    con.execute("INSERT INTO accounts VALUES ('brand', 'tiktok', 0, 0, NULL, NULL, NULL, 0)")
+    jobs = [
+        ("later", now + 7200, "HS-2", ["youtube"], None, None),
+        ("soon", now + 600, None, ["instagram", "youtube", "threads"], None, None),
+        ("done", now - 86400, "HS-1", ["youtube", "instagram"], now - 86000, "completed"),
+        ("old", now - 9 * 86400, "HS-0", ["youtube"], now - 9 * 86400, "completed"),
+    ]
+    for job_id, at, ext, platforms, gone, status in jobs:
+        con.execute("INSERT INTO scheduled_jobs (job_id, profile, scheduled_at, title, external_id, platforms,"
+                    " platform_content, thumbnail_url, gone_at, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (job_id, "brand", at, f"title {job_id}", ext, json.dumps(platforms),
+                     json.dumps({"youtube": {"title": "yt", "caption": "desc"}}), "https://t/1.jpg" if ext else None,
+                     gone, status))
+    con.executemany("INSERT INTO scheduled_results VALUES (?,?,?,?,?,?,?)", [
+        ("done", "youtube", "completed", "https://youtube.com/shorts/a", None, now - 86400, now),
+        ("done", "instagram", "failed", None, "Video too long", None, now),
+    ])
+    con.commit()
+    con.close()
+    return db
+
+
+def test_scheduled_splits_upcoming_and_recent(jobs_db):
+    res = plugin_api.get_scheduled()
+    assert res["status"] == "ok" and res["collecting"]
+    assert [j["job_id"] for j in res["upcoming"]] == ["soon", "later"]
+    assert [j["job_id"] for j in res["recent"]] == ["done"]  # "old" is past the 7-day window
+    assert res["links"]["upcoming"].startswith("https://app.upload-post.com/")
+
+
+def test_scheduled_platform_states(jobs_db):
+    soon = plugin_api.get_scheduled()["upcoming"][0]
+    states = [(p["platform"], p["state"]) for p in soon["platforms"]]
+    # selected in job order; threads selected but not connected; linkedin connected but not selected; tiktok manual
+    assert states == [("instagram", "selected"), ("youtube", "selected"), ("threads", "selected_unconnected"),
+                      ("linkedin", "not_selected"), ("tiktok", "manual")]
+
+
+def test_scheduled_recent_carries_results(jobs_db):
+    done = plugin_api.get_scheduled()["recent"][0]
+    by = {p["platform"]: p for p in done["platforms"]}
+    assert by["youtube"]["result"]["post_url"] == "https://youtube.com/shorts/a"
+    assert by["instagram"]["result"] == {"status": "failed", "post_url": None, "error": "Video too long",
+                                         "upload_ts": None}
+    assert done["platform_content"]["youtube"]["caption"] == "desc"
+    assert done["cover_url"] == "https://t/1.jpg"
+
+
+def test_scheduled_before_collector_upgrade(db):
+    res = plugin_api.get_scheduled()
+    assert res["status"] == "ok" and res["collecting"] is False and res["upcoming"] == []
 
 
 def test_db_is_opened_read_only(db):

@@ -64,7 +64,18 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
   followers are lifetime counters (per-interval = diff between snapshots); channel likes/comments/shares
   are Upload-Post's rolling 30-day totals and are shown as-is in both modes.
 - Strip on top: last 24 h ticks, requests, min `X-RateLimit-Remaining`, 429 count, latest errors.
-- Routes: `GET /options`, `/series?profile=&target=channel|c:<content_id>|r:<request_id>|p:<ids>&metric=&from_ts=&to_ts=&tz=`, `/health`.
+- "Scheduled" card at the top of the page (`GET /scheduled`): one row per Upload-Post job still in its
+  schedule list, sorted by time, shown in Asia/Jerusalem with zone label and "in 7 h 12 min". Icons per
+  job: every platform of that profile — colour = selected, grey = connected but not selected, dashed =
+  known to the profile but not connected (published manually, e.g. TikTok), red dashed outline = selected
+  but not connected (Upload-Post will skip it). Click a row for the per-platform title/caption and the
+  cover. "Recently published" (slot in the last 7 days) adds a per-platform result badge (✓ / ! with the
+  error in the tooltip) and links each icon to the live post. Upload-Post's web app has no per-job URL
+  (checked in its JS bundle 2026-10-10: `/calendar` and `/scheduled-posts` read no query parameters), so
+  the row's ↗ goes to `app.upload-post.com/calendar` (upcoming) or `/upload-history` (published).
+  Icons: Simple Icons 16.34.0 SVG paths (CC0) inlined in `dist/index.js`; LinkedIn is no longer in Simple
+  Icons, so it renders as a text mark.
+- Routes: `GET /options`, `/series?profile=&target=channel|c:<content_id>|r:<request_id>|p:<ids>&metric=&from_ts=&to_ts=&tz=`, `/health`, `/scheduled`.
 - Needs `upload-post-analytics` in `plugins.enabled` (config.yaml) and a dashboard restart to mount
   the backend. Tests: `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest
   upload-post-analytics/dashboard provider-usage/dashboard` and

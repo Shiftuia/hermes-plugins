@@ -20,6 +20,7 @@ both bounds converted to calendar dates in the caller's IANA ``tz``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import closing
@@ -37,6 +38,9 @@ DB_PATH = Path("~/dev/services/_scripts/upload-post-analytics/data/upload_post_a
 METRICS = ("primary", "likes", "comments", "shares", "followers")
 PRIMARY_COLS = ("views", "reach", "impressions")
 HEALTH_WINDOW_SECONDS = 24 * 3600
+RECENT_JOBS_SECONDS = 7 * 86400
+UPLOAD_POST_LINKS = {"upcoming": "https://app.upload-post.com/calendar",
+                     "recent": "https://app.upload-post.com/upload-history"}
 MAX_TS = 4102444800  # 2100-01-01Z: "unbounded" upper edge, still convertible to a date in any zone
 
 
@@ -234,6 +238,78 @@ def get_series(profile: str, target: str = "channel", metric: str = "primary",
             lines = _post_series(db, profile, target, metric, lo, hi)
     return {"status": "ok", "profile": profile, "target": target, "metric": metric,
             "from_ts": from_ts, "to_ts": to_ts, "tz": tz, "lines": lines}
+
+
+def _job_platforms(selected: list[str], accounts: dict[str, dict], results: dict[str, dict]) -> list[dict[str, Any]]:
+    """Every platform worth showing for one job: selected ones first (in job order), then the profile's
+    other connected platforms (not selected), then its known-but-unconnected ones (published by hand)."""
+    out = []
+    for p in selected:
+        acct = accounts.get(p)
+        state = "selected" if acct and acct["connected"] and not acct["reauth_required"] else "selected_unconnected"
+        out.append({"platform": p, "state": state, "result": results.get(p)})
+    for p, acct in sorted(accounts.items()):
+        if p in selected:
+            continue
+        out.append({"platform": p, "state": "not_selected" if acct["connected"] else "manual",
+                    "result": results.get(p)})
+    return out
+
+
+def _job_out(row, accounts, results) -> dict[str, Any]:
+    try:
+        selected = [p for p in json.loads(row["platforms"] or "[]") if isinstance(p, str)]
+    except ValueError:
+        selected = []
+    try:
+        content = json.loads(row["platform_content"] or "{}")
+    except ValueError:
+        content = {}
+    return {
+        "job_id": row["job_id"], "profile": row["profile"], "scheduled_at": row["scheduled_at"],
+        "post_type": row["post_type"], "external_id": row["external_id"], "title": row["title"],
+        "source_filename": row["source_filename"], "original_timezone": row["original_timezone"],
+        "platforms": _job_platforms(selected, accounts.get(row["profile"], {}), results.get(row["job_id"], {})),
+        "platform_content": content if isinstance(content, dict) else {},
+        "cover_url": row["cover_preview_url"] or row["thumbnail_url"],
+        "status": row["status"], "status_message": row["status_message"], "gone_at": row["gone_at"],
+    }
+
+
+@router.get("/scheduled")
+def get_scheduled() -> dict[str, Any]:
+    """Upcoming Upload-Post jobs (still in its schedule list) and jobs whose slot passed in the last 7 days.
+    Upload-Post's web app has no per-job URL (its /calendar and /scheduled-posts views read no query
+    parameters), so rows link to the calendar / history pages."""
+    db = _connect()
+    if db is None:
+        return _not_ready()
+    now = int(time.time())
+    with closing(db):
+        try:
+            jobs = db.execute("SELECT * FROM scheduled_jobs WHERE gone_at IS NULL OR scheduled_at >= ?"
+                              " ORDER BY scheduled_at", (now - RECENT_JOBS_SECONDS,)).fetchall()
+            res_rows = db.execute("SELECT r.* FROM scheduled_results r JOIN scheduled_jobs j USING (job_id)"
+                                  " WHERE j.gone_at IS NOT NULL AND j.scheduled_at >= ?",
+                                  (now - RECENT_JOBS_SECONDS,)).fetchall()
+        except sqlite3.OperationalError:
+            # Collector not yet upgraded to the version that creates these tables.
+            return {"status": "ok", "now": now, "collecting": False, "upcoming": [], "recent": [],
+                    "links": UPLOAD_POST_LINKS}
+        acct_rows = db.execute("SELECT profile, platform, connected, reauth_required FROM accounts").fetchall()
+    accounts: dict[str, dict[str, dict]] = {}
+    for a in acct_rows:
+        accounts.setdefault(a["profile"], {})[a["platform"]] = {
+            "connected": bool(a["connected"]), "reauth_required": bool(a["reauth_required"])}
+    results: dict[str, dict[str, dict]] = {}
+    for r in res_rows:
+        results.setdefault(r["job_id"], {})[r["platform"]] = {
+            "status": r["status"], "post_url": r["post_url"], "error": r["error"], "upload_ts": r["upload_ts"]}
+    upcoming = [_job_out(j, accounts, results) for j in jobs if j["gone_at"] is None]
+    recent = [_job_out(j, accounts, results) for j in jobs if j["gone_at"] is not None]
+    recent.sort(key=lambda j: j["scheduled_at"], reverse=True)
+    return {"status": "ok", "now": now, "collecting": True, "upcoming": upcoming, "recent": recent,
+            "links": UPLOAD_POST_LINKS}
 
 
 @router.get("/health")

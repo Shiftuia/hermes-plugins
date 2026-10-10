@@ -1,7 +1,7 @@
 {
   "name": "upload-post-analytics",
   "label": "Post analytics",
-  "description": "Upload-Post analytics over time: one chart per profile, channel overall or a single post, one line per platform and metric type, plus a 24 h errors/rate-limit strip. Read-only over the upload-post-analytics collector's SQLite.",
+  "description": "Upload-Post analytics over time: scheduled posts (platforms, local time, captions, publish result), one chart per profile, channel overall or a single post, one line per platform and metric type, plus a 24 h errors/rate-limit strip. Read-only over the upload-post-analytics collector's SQLite.",
   "icon": "BarChart3",
   "version": "1.0.0",
   "tab": {
