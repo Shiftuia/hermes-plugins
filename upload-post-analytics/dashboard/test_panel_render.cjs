@@ -255,6 +255,32 @@ test("scheduled list: Jerusalem time, relative, icon states, expand, recent resu
   assert.match(recent.textContent, /1 d ago/);
 });
 
+test("hand-published platform: dashed link item with no numbers, no chart line", async () => {
+  const manualPost = Object.assign({}, POST, { platforms: POST.platforms.concat(
+    [{ platform: "tiktok", url: "https://www.tiktok.com/@h/video/1", stats: false }]) });
+  const opts = JSON.parse(JSON.stringify(OPTIONS));
+  opts.profiles[0].posts = [manualPost];
+  const saved = OPTIONS.profiles;
+  OPTIONS.profiles = opts.profiles;
+  try {
+    const p = await mount();
+    await p.setValue(p.$$("select")[1], POST.key, "change");
+    p.alive("manual platform");
+    const item = p.$("a.upa-legend-manual");
+    assert.ok(item, "manual legend item missing");
+    assert.equal(item.getAttribute("href"), "https://www.tiktok.com/@h/video/1");
+    assert.match(item.textContent, /вручную · нет статистики/);
+    assert.ok(item.querySelector(".upa-pi-manual svg path"), "tiktok icon in the dashed manual style");
+    assert.equal(p.$$("button.upa-legend-item").length, 2, "manual item is not a toggleable series");
+    assert.equal(p.$$("g.upa-series").length, 2, "no chart line for the manual platform");
+    await p.setValue(p.$$("select")[1], "channel", "change");
+    assert.equal(p.$("a.upa-legend-manual"), null, "manual items only belong to a post view");
+    await p.unmount();
+  } finally {
+    OPTIONS.profiles = saved;
+  }
+});
+
 test("scheduled route missing on a not-restarted backend says so, page keeps working", async () => {
   const p = await mount({ scheduled: null });
   p.alive("no /scheduled");

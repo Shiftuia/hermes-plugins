@@ -25,6 +25,9 @@
 .upa-legend-name { font-weight: 600; }
 .upa-legend-metric { opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .upa-legend-value { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: 0.15rem; }
+.upa-legend-manual { border-style: dashed; border-color: rgba(255, 255, 255, 0.35); color: inherit; text-decoration: none; cursor: pointer; }
+.upa-legend-manual .upa-pi { width: 18px; height: 18px; }
+.upa-legend-manual .upa-legend-metric { font-style: italic; }
 .upa-swatch { width: 1.5rem; height: 0.65rem; flex: none; display: inline-block; }
 .upa-plot { position: relative; touch-action: pan-y; }
 .upa-series { transition: opacity 120ms; }

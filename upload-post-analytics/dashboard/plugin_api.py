@@ -63,6 +63,13 @@ def _not_ready() -> dict[str, Any]:
     return {"status": "not_configured", "error": f"collector DB not found at {DB_PATH}"}
 
 
+def _not_duplicate(db) -> str:
+    """SQL filter hiding rows the collector marked as another id of the same publication; a DB from
+    before the collector added ``duplicate_of`` has none to hide."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(posts)")}
+    return "p.duplicate_of IS NULL" if "duplicate_of" in cols else "1"
+
+
 def _group_posts(rows) -> list[list]:
     """One group per logical post: shared vault content_id, else shared Upload-Post request_id
     (same multi-platform upload), else a lone post. No title or publish-time heuristics -- see
@@ -127,10 +134,10 @@ def get_options() -> dict[str, Any]:
             " FROM accounts ORDER BY profile, platform").fetchall()
         posts = db.execute(
             "SELECT p.id, p.profile, p.platform, p.request_id, p.url, p.title, p.media_type,"
-            " p.content_id, p.content_title,"
+            " p.content_id, p.content_title, p.source,"
             " COALESCE(p.published_at, p.first_seen) AS published_at,"
             " (SELECT COUNT(*) FROM post_snapshots s WHERE s.post_id = p.id) AS snapshots"
-            " FROM posts p").fetchall()
+            f" FROM posts p WHERE {_not_duplicate(db)}").fetchall()
     profiles: dict[str, dict[str, Any]] = {}
     for a in accounts:
         prof = profiles.setdefault(a["profile"], {"profile": a["profile"], "accounts": [], "posts": []})
@@ -144,11 +151,15 @@ def get_options() -> dict[str, Any]:
         content_id = next((x["content_id"] for x in group if x["content_id"]), None)
         title = (next((x["content_title"] for x in group if x["content_id"] and x["content_title"]), "")
                  if content_id else next((x["title"] for x in group if x["title"]), ""))
+        # A vault row's date is the note's calendar day (midnight), coarser than a collected timestamp.
+        timed = [x for x in group if x["source"] != "vault"] or group
         prof["posts"].append({
             "key": _group_key(group),
             "title": f"{content_id} \u2014 {title}" if content_id else (title or _untitled_label(group)),
-            "published_at": min(x["published_at"] or 0 for x in group) or None,
-            "platforms": [{"platform": x["platform"], "url": x["url"]} for x in group],
+            "published_at": min(x["published_at"] or 0 for x in timed) or None,
+            # stats=False: hand-published url from the vault note, collected with no metrics.
+            "platforms": [{"platform": x["platform"], "url": x["url"], "stats": x["source"] != "vault"}
+                          for x in group],
             "snapshots": sum(x["snapshots"] for x in group),
             "joined_by": "content_id" if content_id else ("request_id" if group[0]["request_id"] else None),
         })
@@ -216,12 +227,14 @@ def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: i
         return []
     if kind == "p" and not all(x.isdigit() for x in ident.split(",")):
         return []
-    candidates = db.execute("SELECT id, profile, platform, content_id, request_id, published_at"
-                            " FROM posts WHERE profile=?", (profile,)).fetchall()
+    candidates = db.execute("SELECT p.id, p.profile, p.platform, p.content_id, p.request_id, p.published_at, p.source"
+                            f" FROM posts p WHERE p.profile=? AND {_not_duplicate(db)}", (profile,)).fetchall()
     posts = next((group for group in _group_posts(candidates) if _group_key(group) == key), [])
     col = "followers_gained" if metric == "followers" else metric
     lines = []
     for p in posts:
+        if p["source"] == "vault":  # no metrics exist; a line would read as zero
+            continue
         snaps = db.execute("SELECT * FROM post_snapshots WHERE post_id=? AND ts >= ? AND ts < ? ORDER BY ts",
                            (p["id"], from_ts, to_ts)).fetchall()
         points, mtype = [], None

@@ -139,8 +139,22 @@
       h("circle", { cx: 12, cy: 5, r: 2.5, fill: line.color }));
   }
 
-  function Legend({ lines, hidden, toggle, setHover }) {
-    if (lines.length === 0) return h("div", { className: "upa-legend upa-muted" }, "No series for this selection.");
+  function ManualItem({ p }) {
+    const tip = p.platform + ": published by hand, not collected by Upload-Post — no statistics";
+    return h("a", { className: "upa-legend-item upa-legend-manual", href: p.url, target: "_blank",
+      rel: "noopener noreferrer", title: tip },
+      h(PlatformIcon, { p: { platform: p.platform, state: "manual" }, showResult: false }),
+      h("span", { className: "upa-legend-name" }, p.platform),
+      h("span", { className: "upa-legend-metric" }, "вручную · нет статистики"),
+      h("span", { "aria-hidden": true }, "↗"));
+  }
+
+  function Legend({ lines, hidden, toggle, setHover, manual }) {
+    const manualItems = (manual || []).map(function (p) { return h(ManualItem, { key: "m:" + p.platform + p.url, p: p }); });
+    if (lines.length === 0) {
+      return h("div", { className: "upa-legend" },
+        h("span", { className: "upa-muted" }, "No series for this selection."), manualItems);
+    }
     return h("div", { className: "upa-legend", role: "group", "aria-label": "Chart legend: click an item to show or hide its line" },
       lines.map(function (l) {
         const off = hidden.has(l.id);
@@ -155,7 +169,7 @@
           h("span", { className: "upa-legend-name" }, l.platform),
           h("span", { className: "upa-legend-metric" }, l.metric + (l.kind === "window" ? " · 30-day window" : "")),
           h("span", { className: "upa-legend-value" }, l.pending ? "pending" : fmtNum(l.last)));
-      }));
+      }), manualItems);
   }
 
   const CHART = { W: 900, H: 340, L: 56, R: 16, T: 12, B: 34 };
@@ -660,7 +674,8 @@
           series.data && series.data.status === "ok" && !("from_ts" in series.data) && h("div", { className: "upa-health upa-bad" },
             "The dashboard backend predates the range filter, so all data is shown — restart the dashboard to apply the range."),
           h("div", { className: "upa-chart-box" },
-            h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover }),
+            h(Legend, { lines: lines, hidden: hidden, toggle: toggle, setHover: setHover,
+              manual: post ? post.platforms.filter(function (p) { return p.stats === false && p.url; }) : NO_LINES }),
             h(Chart, { lines: rangeValid ? visible : NO_LINES,
               anyLines: rangeValid && lines.length > 0, hover: hover, range: range })),
           h("div", { className: "upa-muted upa-note" },

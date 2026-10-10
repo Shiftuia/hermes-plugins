@@ -242,6 +242,39 @@ def test_same_platform_posts_keep_distinct_lines_and_values(db):
     assert {l["post_id"] for l in yt} == {1, 6}
     assert {tuple(p[1] for p in l["points"]) for l in yt} == {(100, 160), (999,)}
 
+
+def test_vault_row_joins_its_group_without_a_series_line(db):
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,url,source,content_id,content_title,published_at)"
+                " VALUES (7,'brand','tiktok','769','https://www.tiktok.com/@b/video/769','vault','HS-001','Same video',1)")
+    con.commit()
+    con.close()
+    group = next(p for p in plugin_api.get_options()["profiles"][0]["posts"] if p["key"] == "c:HS-001")
+    by = {p["platform"]: p for p in group["platforms"]}
+    assert by["tiktok"] == {"platform": "tiktok", "url": "https://www.tiktok.com/@b/video/769", "stats": False}
+    assert by["youtube"]["stats"] is True
+    assert group["published_at"] > 1  # the vault row's day does not drag the publish time back
+    for metric in plugin_api.METRICS:
+        lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric=metric)["lines"]
+        assert "tiktok" not in {l["platform"] for l in lines}
+
+
+def test_duplicate_rows_are_one_post(db):
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE posts ADD COLUMN duplicate_of INTEGER")
+    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,source,content_id,published_at,duplicate_of)"
+                " VALUES (8,'brand','instagram','ig1-other-id','api','HS-001',1,2)")
+    con.execute("INSERT INTO post_snapshots(post_id,ts,metric_type,reach) VALUES (8,?, 'reach',5000)",
+                (int(time.time()) - 600,))
+    con.commit()
+    con.close()
+    group = next(p for p in plugin_api.get_options()["profiles"][0]["posts"] if p["key"] == "c:HS-001")
+    assert sorted(p["platform"] for p in group["platforms"]) == ["instagram", "youtube"]
+    assert group["snapshots"] == 4
+    lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")["lines"]
+    assert sorted(l["post_id"] for l in lines) == [1, 2]
+
+
 def test_total_delta_baselines_are_platform_specific_and_precede_range(db):
     now = int(time.time())
     lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary",
