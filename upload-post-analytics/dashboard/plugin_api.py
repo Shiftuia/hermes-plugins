@@ -39,6 +39,11 @@ DB_PATH = Path("~/dev/services/_scripts/upload-post-analytics/data/upload_post_a
 
 METRICS = ("primary", "likes", "comments", "shares", "followers")
 PRIMARY_COLS = ("views", "reach", "impressions")
+PRIMARY_SERIES = {
+    "facebook": "reach", "instagram": "reach", "linkedin": "reach",
+    "youtube": "views", "tiktok": "views", "threads": "views",
+    "x": "impressions", "pinterest": "impressions", "reddit": "score", "bluesky": "engagement",
+}
 HEALTH_WINDOW_SECONDS = 24 * 3600
 RECENT_JOBS_SECONDS = 7 * 86400
 UPLOAD_POST_LINKS = {"upcoming": "https://app.upload-post.com/calendar",
@@ -174,10 +179,12 @@ def _channel_series(db, profile: str, metric: str, from_ts: int, to_ts: int, tz:
         d0, d1 = _date_bounds(from_ts, to_ts, tz)
         rows = db.execute(
             "SELECT platform, series, metric_type, date, value FROM channel_daily"
-            " WHERE profile=? AND series=metric_type AND date >= ? AND date <= ? ORDER BY platform, date",
+            " WHERE profile=? AND date >= ? AND date <= ? ORDER BY platform, date",
             (profile, d0, d1)).fetchall()
         by_platform: dict[str, dict[str, Any]] = {}
         for r in rows:
+            if r["series"] != PRIMARY_SERIES.get(r["platform"]) or r["metric_type"] != r["series"]:
+                continue
             line = by_platform.setdefault(r["platform"], {
                 "platform": r["platform"], "metric_type": r["metric_type"], "kind": "daily", "points": []})
             line["points"].append([r["date"], r["value"]])

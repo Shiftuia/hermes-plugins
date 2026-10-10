@@ -255,6 +255,17 @@ def test_total_delta_baselines_are_platform_specific_and_precede_range(db):
     assert follower == []
 
 
+def test_secondary_rows_repaired_to_own_metric_type_still_excluded(db):
+    con = sqlite3.connect(db)
+    con.execute("UPDATE channel_daily SET metric_type=series WHERE platform='youtube' AND series='subscribers_gained'")
+    con.execute("INSERT INTO channel_daily VALUES ('brand','instagram','impressions','2026-10-01',"
+                " 'impressions',10000,0)")
+    con.commit()
+    con.close()
+    by_platform = {l["platform"]: l for l in plugin_api.get_series(profile="brand", metric="primary")["lines"]}
+    assert by_platform["youtube"]["points"] == [["2026-10-01", 10]]
+    assert by_platform["instagram"]["points"] == [["2026-10-01", 7]]
+
 def test_pending_dates_remain_null_and_secondary_series_excluded(db):
     con = sqlite3.connect(db)
     con.execute("UPDATE channel_daily SET value=NULL WHERE platform='youtube' AND series='views'")
