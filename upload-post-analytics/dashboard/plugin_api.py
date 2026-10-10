@@ -5,8 +5,10 @@ Mounted at /api/plugins/upload-post-analytics/. The collector
 with ``mode=ro`` and never calls the Upload-Post API.
 
 Series kinds, so the UI can toggle cumulative vs per-interval honestly:
-  - ``daily``  per-day values (channel_daily): cumulative = running sum, delta = as-is.
-  - ``total``  lifetime counters (post snapshots, channel followers): delta = consecutive diffs.
+  - ``daily``  per-day values (channel_daily): cumulative = sum within selected range, delta = as-is.
+                 Recent days are NULL until the reporting window closes (YouTube: 3 days).
+  - ``total``  lifetime counters (post snapshots, channel followers): delta = consecutive diffs,
+                 with the last snapshot before the selected range as the first baseline.
   - ``window`` rolling 30-day aggregates (channel snapshot likes/comments/shares): shown as-is
                in both modes, because neither a running sum nor a diff of a rolling window means anything.
 Values with different ``metric_type`` (reach / views / impressions) are never summed together.
@@ -63,9 +65,18 @@ def _group_posts(rows) -> list[list]:
     by_content: dict[tuple[str, str], list] = {}
     by_request: dict[tuple[str, str], list] = {}
     lone: list[list] = []
+    request_content: dict[tuple[str, str], set[str]] = {}
     for r in rows:
-        if r["content_id"]:
-            by_content.setdefault((r["profile"], r["content_id"]), []).append(r)
+        if r["request_id"] and r["content_id"]:
+            request_content.setdefault((r["profile"], r["request_id"]), set()).add(r["content_id"])
+    for r in rows:
+        content = r["content_id"]
+        if not content and r["request_id"]:
+            matched = request_content.get((r["profile"], r["request_id"]), set())
+            if len(matched) == 1:
+                content = next(iter(matched))
+        if content:
+            by_content.setdefault((r["profile"], content), []).append(r)
         elif r["request_id"]:
             by_request.setdefault((r["profile"], r["request_id"]), []).append(r)
         else:
@@ -76,8 +87,9 @@ def _group_posts(rows) -> list[list]:
 
 
 def _group_key(group) -> str:
-    if group[0]["content_id"]:
-        return f"c:{group[0]['content_id']}"
+    content_id = next((x["content_id"] for x in group if x["content_id"]), None)
+    if content_id:
+        return f"c:{content_id}"
     if group[0]["request_id"]:
         return f"r:{group[0]['request_id']}"
     return "p:" + ",".join(str(x["id"]) for x in sorted(group, key=lambda x: x["id"]))
@@ -124,8 +136,9 @@ def get_options() -> dict[str, Any]:
         })
     for group in _group_posts(posts):
         prof = profiles.setdefault(group[0]["profile"], {"profile": group[0]["profile"], "accounts": [], "posts": []})
-        content_id = group[0]["content_id"]
-        title = group[0]["content_title"] if content_id else next((x["title"] for x in group if x["title"]), "")
+        content_id = next((x["content_id"] for x in group if x["content_id"]), None)
+        title = (next((x["content_title"] for x in group if x["content_id"] and x["content_title"]), "")
+                 if content_id else next((x["title"] for x in group if x["title"]), ""))
         prof["posts"].append({
             "key": _group_key(group),
             "title": f"{content_id} \u2014 {title}" if content_id else (title or _untitled_label(group)),
@@ -180,23 +193,25 @@ def _channel_series(db, profile: str, metric: str, from_ts: int, to_ts: int, tz:
         line = by_platform.setdefault(r["platform"], {
             "platform": r["platform"], "metric_type": metric, "kind": kind, "points": []})
         line["points"].append([r["ts"] * 1000, r["v"]])
+    if kind == "total":
+        for platform, line in by_platform.items():
+            baseline = db.execute(
+                f"SELECT {col} FROM channel_snapshots WHERE profile=? AND platform=? AND {col} IS NOT NULL"
+                " AND ts < ? ORDER BY ts DESC, id DESC LIMIT 1", (profile, platform, from_ts)).fetchone()
+            line["baseline"] = baseline[0] if baseline else None
     lines.extend(by_platform.values())
     return lines
 
 
 def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
     kind, _, ident = key.partition(":")
-    if kind == "c":
-        posts = db.execute("SELECT id, platform FROM posts WHERE profile=? AND content_id=? ORDER BY platform",
-                           (profile, ident)).fetchall()
-    elif kind == "r":
-        posts = db.execute("SELECT id, platform FROM posts WHERE profile=? AND request_id=?", (profile, ident)).fetchall()
-    elif kind == "p" and ident and all(x.isdigit() for x in ident.split(",")):
-        ids = [int(x) for x in ident.split(",")]
-        posts = db.execute(f"SELECT id, platform FROM posts WHERE profile=? AND id IN ({','.join('?' * len(ids))})"
-                           " ORDER BY platform", (profile, *ids)).fetchall()
-    else:
+    if kind not in ("c", "r", "p") or not ident:
         return []
+    if kind == "p" and not all(x.isdigit() for x in ident.split(",")):
+        return []
+    candidates = db.execute("SELECT id, profile, platform, content_id, request_id, published_at"
+                            " FROM posts WHERE profile=?", (profile,)).fetchall()
+    posts = next((group for group in _group_posts(candidates) if _group_key(group) == key), [])
     col = "followers_gained" if metric == "followers" else metric
     lines = []
     for p in posts:
@@ -210,7 +225,13 @@ def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: i
                 value, mtype = s[col], metric
             if value is not None:
                 points.append([s["ts"] * 1000, value])
-        lines.append({"platform": p["platform"], "metric_type": mtype or metric, "kind": "total", "points": points})
+        baseline_filter = ("(views IS NOT NULL OR reach IS NOT NULL OR impressions IS NOT NULL)"
+                           if metric == "primary" else f"{col} IS NOT NULL")
+        baseline = db.execute(f"SELECT * FROM post_snapshots WHERE post_id=? AND {baseline_filter}"
+                              " AND ts < ? ORDER BY ts DESC, id DESC LIMIT 1", (p["id"], from_ts)).fetchone()
+        prior = (_primary_value(baseline)[0] if metric == "primary" else baseline[col]) if baseline else None
+        lines.append({"post_id": p["id"], "platform": p["platform"], "metric_type": mtype or metric,
+                      "kind": "total", "baseline": prior, "points": points})
     return lines
 
 

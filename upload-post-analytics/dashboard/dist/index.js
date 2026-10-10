@@ -87,18 +87,25 @@
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   }
 
-  // daily → running sum / as-is; total → as-is / consecutive diff; window → as-is either way.
+  // Daily values accumulate only within the selected range; total snapshots are lifetime counters.
   function transform(line, mode) {
     const pts = line.points;
     if (line.kind === "window") return pts;
     if (line.kind === "daily") {
       if (mode === "delta") return pts;
       let acc = 0;
-      return pts.map(function (p) { acc += p[1]; return [p[0], acc, p[2]]; });
+      return pts.map(function (p) {
+        if (p[1] == null) return [p[0], null, p[2]];
+        acc += p[1];
+        return [p[0], acc, p[2]];
+      });
     }
     if (mode === "cumulative") return pts;
-    const out = [];
-    for (let i = 1; i < pts.length; i++) out.push([pts[i][0], pts[i][1] - pts[i - 1][1]]);
+    const out = [], prior = line.baseline;
+    for (let i = 0; i < pts.length; i++) {
+      const prev = i ? pts[i - 1][1] : prior;
+      out.push([pts[i][0], prev == null ? null : Math.max(0, pts[i][1] - prev)]);
+    }
     return out;
   }
 
@@ -147,7 +154,7 @@
           h(Swatch, { line: l }),
           h("span", { className: "upa-legend-name" }, l.platform),
           h("span", { className: "upa-legend-metric" }, l.metric + (l.kind === "window" ? " · 30-day window" : "")),
-          h("span", { className: "upa-legend-value" }, fmtNum(l.last)));
+          h("span", { className: "upa-legend-value" }, l.pending ? "pending" : fmtNum(l.last)));
       }));
   }
 
@@ -161,9 +168,10 @@
     let n = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     lines.forEach(function (l) {
       l.pts.forEach(function (p) {
-        n++;
         if (p[0] < minX) minX = p[0];
         if (p[0] > maxX) maxX = p[0];
+        if (p[1] == null) return;
+        n++;
         if (p[1] < minY) minY = p[1];
         if (p[1] > maxY) maxY = p[1];
       });
@@ -185,8 +193,15 @@
     for (let v = y0; v <= y1 + step / 2; v += step) yTicks.push(v);
     const xTicks = [0, 1, 2, 3, 4].map(function (i) { return x0 + ((x1 - x0) * i) / 4; });
     const paths = lines.map(function (l) {
-      let d = "";
-      for (let i = 0; i < l.pts.length; i++) d += (i ? "L" : "M") + sx(l.pts[i][0]).toFixed(1) + "," + sy(l.pts[i][1]).toFixed(1);
+      let d = "", connected = false, previous = null;
+      for (let i = 0; i < l.pts.length; i++) {
+        const p = l.pts[i];
+        if (p[1] == null) { connected = false; continue; }
+        if (l.kind === "daily" && previous && p[0] - previous[0] > 26 * 3600000) connected = false;
+        d += (connected ? "L" : "M") + sx(p[0]).toFixed(1) + "," + sy(p[1]).toFixed(1);
+        connected = true;
+        previous = p;
+      }
       return d;
     });
     return { x0: x0, x1: x1, sx: sx, sy: sy, yTicks: yTicks, xTicks: xTicks, paths: paths };
@@ -228,9 +243,10 @@
       return lines.map(function (l, li) {
         const cls = "upa-series" + (hover ? (hover === l.id ? " upa-focus" : " upa-dim") : "");
         return h("g", { key: l.id, className: cls },
-          l.pts.length > 1 && h("path", { d: g.paths[li], stroke: l.color, strokeDasharray: l.dash || null, className: "upa-line" }),
+          g.paths[li] && h("path", { d: g.paths[li], stroke: l.color, strokeDasharray: l.dash || null, className: "upa-line" }),
           l.pts.length <= MAX_DOTS && l.pts.map(function (p, i) {
-            return h("circle", { key: i, cx: g.sx(p[0]), cy: g.sy(p[1]), r: l.pts.length > 40 ? 1.5 : 3, fill: l.color });
+            return p[1] != null && h("circle", { key: i, cx: g.sx(p[0]), cy: g.sy(p[1]),
+              r: l.pts.length > 40 ? 1.5 : 3, fill: l.color });
           }));
       });
     }, [g, lines, hover]);
@@ -270,7 +286,7 @@
         tip && h("line", { x1: sx(tip.ts), x2: sx(tip.ts), y1: T, y2: H - B, className: "upa-cursor" }),
         seriesLayer,
         tip && tip.rows.map(function (r) {
-          return r.p && h("circle", { key: "c" + r.line.id, cx: sx(r.p[0]), cy: sy(r.p[1]), r: 5, fill: r.line.color,
+          return r.p && r.p[1] != null && h("circle", { key: "c" + r.line.id, cx: sx(r.p[0]), cy: sy(r.p[1]), r: 5, fill: r.line.color,
             className: "upa-cursor-dot" });
         })),
       tip && h("div", { className: "upa-tip" + (tipLeft > 60 ? " upa-tip-left" : ""), style: { left: tipLeft + "%" } },
@@ -279,7 +295,7 @@
           return h("div", { key: r.line.id, className: "upa-tip-row" },
             h(Swatch, { line: r.line }),
             h("span", null, h("span", { className: "upa-cap" }, r.line.platform), " " + r.line.metric),
-            h("b", null, r.p ? fmtNum(r.p[1]) : "—"));
+            h("b", null, r.p ? (r.p[1] == null ? "pending" : fmtNum(r.p[1])) : "—"));
         })));
   }
 
@@ -579,13 +595,14 @@
           points: l.points.map(function (p) { const day = dailyDate(p[0]); return [dateX(day), p[1], day]; }) }) : l;
         const pts = transform(src, mode);
         return {
-          id: l.platform + ":" + l.metric_type,
+          id: l.platform + ":" + l.metric_type + (l.post_id == null ? "" : ":" + l.post_id),
           platform: l.platform,
           metric: l.metric_type,
           color: COLORS[l.platform] || "#c9a227",
           dash: l.kind === "window" ? "6 4" : null,
           pts: pts,
           last: pts.length ? pts[pts.length - 1][1] : null,
+          pending: pts.length > 0 && pts[pts.length - 1][1] == null,
           kind: l.kind,
         };
       });
@@ -648,7 +665,7 @@
               anyLines: rangeValid && lines.length > 0, hover: hover, range: range })),
           h("div", { className: "upa-muted upa-note" },
             target === "channel" && metric === "primary"
-              ? "Daily series from Upload-Post (last 30 days, kept by the collector beyond that), plotted at each platform's own calendar date — never shifted by time zone. Each platform reports its own metric type; they are never summed."
+              ? "Daily Upload-Post values (30-day API window, retained afterward). Cumulative sums only the selected days, not lifetime views; recent YouTube days (3-day reporting lag) and each platform's current day are pending gaps. Platform calendar dates are never shifted. Metrics are not summed across platforms."
               : target === "channel" && metric !== "followers"
               ? "Channel likes/comments/shares are Upload-Post's rolling 30-day totals per snapshot (dashed), shown as-is."
               : "Snapshots taken by the collector; per-interval = change between consecutive snapshots."),

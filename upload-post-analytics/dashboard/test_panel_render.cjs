@@ -188,6 +188,37 @@ test("every point is in the path; per-point dots only on lines with <= 120 point
   await p.unmount();
 });
 
+test("pending daily days are gaps, not zeros or cumulative steps", async () => {
+  const sample = (q) => Object.assign(seriesNew(q), { lines: [
+    { platform: "youtube", metric_type: "views", kind: "daily", points: [
+      [isoDay(NOW - 4 * DAY_MS), 29], [isoDay(NOW - 3 * DAY_MS), 95],
+      [isoDay(NOW - 2 * DAY_MS), null], [isoDay(NOW - DAY_MS), null]] }] });
+  const p = await mount({ series: sample });
+  const group = p.$("g.upa-series");
+  assert.ok(group);
+  assert.equal(group.querySelectorAll("circle").length, 2);
+  assert.equal((group.querySelector("path").getAttribute("d").match(/L/g) || []).length, 1);
+  assert.match(p.$(".upa-legend-value").textContent, /pending/);
+  await p.click(p.$$(".upa-toggle-btn").find((b) => b.textContent === "Per interval"));
+  assert.equal(p.$("g.upa-series").querySelectorAll("circle").length, 2);
+  await p.unmount();
+});
+
+test("post deltas use prior-range baseline and counter resets never go negative", async () => {
+  const sample = (q) => Object.assign(seriesNew(q), { lines: [
+    { platform: "youtube", metric_type: "views", kind: "total", baseline: 100,
+      points: [[NOW - 3 * 3600000, 110], [NOW - 2 * 3600000, 2], [NOW - 3600000, 12]] }] });
+  const p = await mount({ series: sample });
+  await p.setValue(p.$$("select")[1], POST.key, "change");
+  await p.click(p.$$(".upa-toggle-btn").find((b) => b.textContent === "Per interval"));
+  assert.equal(p.$("g.upa-series").querySelectorAll("circle").length, 3);
+  const ys = [...p.$("g.upa-series").querySelectorAll("circle")].map((el) => +el.getAttribute("cy"));
+  assert.ok(ys.every((y) => y <= 306), "negative delta plotted below zero axis");
+  assert.match(p.$("g.upa-series path").getAttribute("d"), /M/);
+  assert.equal(p.$(".upa-legend-value").textContent, "10");
+  await p.unmount();
+});
+
 test("scheduled list: Jerusalem time, relative, icon states, expand, recent results", async (t) => {
   const p = await mount();
   t.after(() => p.unmount());

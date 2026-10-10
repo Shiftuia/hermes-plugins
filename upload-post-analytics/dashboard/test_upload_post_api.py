@@ -217,6 +217,53 @@ def test_channel_primary_uses_only_the_platform_metric_series(db):
     assert len(by_platform["youtube"]["points"]) == 1  # subscribers_gained and mislabeled rows excluded
 
 
+def test_request_id_bridge_keeps_unmatched_platform_in_content_group(db):
+    con = sqlite3.connect(db)
+    con.execute("UPDATE posts SET content_id=NULL, content_title=NULL WHERE id=2")
+    con.commit()
+    con.close()
+    posts = plugin_api.get_options()["profiles"][0]["posts"]
+    group = next(p for p in posts if p["key"] == "c:HS-001")
+    assert {p["platform"] for p in group["platforms"]} == {"instagram", "youtube"}
+    lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")["lines"]
+    assert {p["platform"] for p in lines} == {"instagram", "youtube"}
+
+
+def test_same_platform_posts_keep_distinct_lines_and_values(db):
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,content_id,published_at)"
+                " VALUES (6,'brand','youtube','yt-second','HS-001',1)")
+    con.execute("INSERT INTO post_snapshots(post_id,ts,metric_type,views)"
+                " VALUES (6,?, 'views',999)", (int(time.time()) - 900,))
+    con.commit()
+    con.close()
+    lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")["lines"]
+    yt = [l for l in lines if l["platform"] == "youtube"]
+    assert {l["post_id"] for l in yt} == {1, 6}
+    assert {tuple(p[1] for p in l["points"]) for l in yt} == {(100, 160), (999,)}
+
+def test_total_delta_baselines_are_platform_specific_and_precede_range(db):
+    now = int(time.time())
+    lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary",
+                                  from_ts=now - 2700, to_ts=now)["lines"]
+    by_platform = {l["platform"]: l for l in lines}
+    assert by_platform["youtube"]["baseline"] == 100
+    assert by_platform["instagram"]["baseline"] == 30
+    assert by_platform["youtube"]["points"][0][1] == 160
+    assert by_platform["instagram"]["points"][0][1] == 55
+    follower = plugin_api.get_series(profile="brand", metric="followers", from_ts=now + 1)["lines"]
+    assert follower == []
+
+
+def test_pending_dates_remain_null_and_secondary_series_excluded(db):
+    con = sqlite3.connect(db)
+    con.execute("UPDATE channel_daily SET value=NULL WHERE platform='youtube' AND series='views'")
+    con.commit()
+    con.close()
+    lines = plugin_api.get_series(profile="brand", metric="primary")["lines"]
+    yt = next(line for line in lines if line["platform"] == "youtube")
+    assert yt["points"] == [["2026-10-01", None]]
+
 def test_channel_followers_and_window_metrics(db):
     followers = plugin_api.get_series(profile="brand", target="channel", metric="followers")["lines"]
     assert followers[0]["kind"] == "total" and followers[0]["points"][0][1] == 13
