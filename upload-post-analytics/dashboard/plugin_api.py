@@ -76,6 +76,13 @@ def _not_duplicate(db) -> str:
     return "p.duplicate_of IS NULL" if "duplicate_of" in cols else "1"
 
 
+def _visible_posts(db) -> str:
+    cols = {r[1] for r in db.execute("PRAGMA table_info(posts)")}
+    gone = "p.gone_at IS NULL" if "gone_at" in cols else "1"
+    return (f"{_not_duplicate(db)} AND {gone} AND p.published_at IS NOT NULL"
+            " AND p.published_at <= ? AND (p.platform != 'youtube' OR p.source IN ('media','vault'))")
+
+
 def _group_posts(rows) -> list[list]:
     """One group per logical post: shared vault content_id, else shared Upload-Post request_id
     (same multi-platform upload), else a lone post. No title or publish-time heuristics -- see
@@ -143,7 +150,7 @@ def get_options() -> dict[str, Any]:
             " p.content_id, p.content_title, p.source,"
             " COALESCE(p.published_at, p.first_seen) AS published_at,"
             " (SELECT COUNT(*) FROM post_snapshots s WHERE s.post_id = p.id) AS snapshots"
-            f" FROM posts p WHERE {_not_duplicate(db)}").fetchall()
+            f" FROM posts p WHERE {_visible_posts(db)}", (int(time.time()),)).fetchall()
     profiles: dict[str, dict[str, Any]] = {}
     for a in accounts:
         prof = profiles.setdefault(a["profile"], {"profile": a["profile"], "accounts": [], "posts": []})
@@ -234,7 +241,8 @@ def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: i
     if kind == "p" and not all(x.isdigit() for x in ident.split(",")):
         return []
     candidates = db.execute("SELECT p.id, p.profile, p.platform, p.content_id, p.request_id, p.published_at, p.source"
-                            f" FROM posts p WHERE p.profile=? AND {_not_duplicate(db)}", (profile,)).fetchall()
+                            f" FROM posts p WHERE p.profile=? AND {_visible_posts(db)}",
+                            (profile, int(time.time()))).fetchall()
     posts = next((group for group in _group_posts(candidates) if _group_key(group) == key), [])
     col = "followers_gained" if metric == "followers" else metric
     lines = []

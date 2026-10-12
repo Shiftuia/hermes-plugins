@@ -63,6 +63,7 @@ def db(tmp_path, monkeypatch):
         (4, "brand", "youtube", "yt2", None, "", now - 3300, None, None, "VIDEO"),
         (5, "brand", "youtube", "yt3", None, "Unrelated", now - 86400, None, None, "VIDEO"),
     ])
+    con.execute("UPDATE posts SET source='media' WHERE platform='youtube'")
     con.executemany("INSERT INTO post_snapshots (post_id, ts, metric_type, views, reach, likes) VALUES (?,?,?,?,?,?)", [
         (1, now - 3600, "views", 100, None, 5),
         (1, now - 1800, "views", 160, None, 9),
@@ -87,6 +88,36 @@ def db(tmp_path, monkeypatch):
     con.close()
     monkeypatch.setattr(plugin_api, "DB_PATH", path)
     return path
+
+
+def test_only_public_past_posts_are_visible_in_options_and_series(db):
+    now = int(time.time())
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE posts ADD COLUMN gone_at INTEGER")
+    con.execute("UPDATE posts SET gone_at=? WHERE id=1", (now,))
+    con.execute("UPDATE posts SET published_at=? WHERE id=2", (now + 7200,))
+    con.execute("UPDATE posts SET source='api' WHERE id=4")
+    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,source,published_at)"
+                " VALUES (9,'brand','youtube','HS-031','api',?)", (now + 7200,))
+    con.execute("INSERT INTO post_snapshots(post_id,ts,views) VALUES (9,?,400)", (now,))
+    con.commit()
+    con.close()
+    keys = {p['key'] for p in plugin_api.get_options()['profiles'][0]['posts']}
+    assert keys == {'p:3', 'p:5'}
+    assert plugin_api.get_series(profile='brand', target='c:HS-001')['lines'] == []
+    assert plugin_api.get_series(profile='brand', target='p:4')['lines'] == []
+    assert plugin_api.get_series(profile='brand', target='p:9')['lines'] == []
+
+
+def test_youtube_media_post_appears_at_publish_time(db, monkeypatch):
+    now = int(time.time())
+    con = sqlite3.connect(db)
+    con.execute("UPDATE posts SET published_at=? WHERE id=4", (now + 7200,))
+    con.commit()
+    con.close()
+    assert 'p:4' not in {p['key'] for p in plugin_api.get_options()['profiles'][0]['posts']}
+    monkeypatch.setattr(plugin_api.time, 'time', lambda: now + 7201)
+    assert 'p:4' in {p['key'] for p in plugin_api.get_options()['profiles'][0]['posts']}
 
 
 def test_missing_db_reports_not_configured(tmp_path, monkeypatch):
@@ -231,8 +262,8 @@ def test_request_id_bridge_keeps_unmatched_platform_in_content_group(db):
 
 def test_same_platform_posts_keep_distinct_lines_and_values(db):
     con = sqlite3.connect(db)
-    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,content_id,published_at)"
-                " VALUES (6,'brand','youtube','yt-second','HS-001',1)")
+    con.execute("INSERT INTO posts(id,profile,platform,platform_post_id,content_id,published_at,source)"
+                " VALUES (6,'brand','youtube','yt-second','HS-001',1,'media')")
     con.execute("INSERT INTO post_snapshots(post_id,ts,metric_type,views)"
                 " VALUES (6,?, 'views',999)", (int(time.time()) - 900,))
     con.commit()
