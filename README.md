@@ -69,12 +69,18 @@ Dashboard tab "Post analytics": one chart over the SQLite written by the Upload-
   job: every platform of that profile — colour = selected, grey = connected but not selected, dashed =
   known to the profile but not connected (published manually, e.g. TikTok), red dashed outline = selected
   but not connected (Upload-Post will skip it). Click a row for the per-platform title/caption and the
-  cover. "Recently published" (slot in the last 7 days) adds a per-platform result badge (✓ / ! with the
-  error in the tooltip) and links each icon to the live post. Upload-Post's web app has no per-job URL
+  cover. "Recently published" (slot in the last 7 days) adds per-platform result badges for published
+  and pending results, a separate clickable recent-error count, and links each icon to the live post. Upload-Post's web app has no per-job URL
   (checked in its JS bundle 2026-10-10: `/calendar` and `/scheduled-posts` read no query parameters), so
   the row's ↗ goes to `app.upload-post.com/calendar` (upcoming) or `/upload-history` (published).
   Icons: Simple Icons 16.34.0 SVG paths (CC0) inlined in `dist/index.js`; LinkedIn is no longer in Simple
   Icons, so it renders as a text mark.
+- Row errors are counted within the last 48 hours and hidden until the count button is clicked,
+  including when captions are expanded. Age uses the upload timestamp, then the job's departure
+  from the schedule (or slot), not the collector's refreshed poll timestamp. Global collector
+  health remains a separate 24-hour strip.
+- `dashboard/dist/` is the only frontend implementation for this plugin; there is no source tree
+  or build command. Update it directly and verify with `node --check` and the render tests.
 - Routes: `GET /options`, `/series?profile=&target=channel|c:<content_id>|r:<request_id>|p:<ids>&metric=&from_ts=&to_ts=&tz=`, `/health`, `/scheduled`.
 - Needs `upload-post-analytics` in `plugins.enabled` (config.yaml) and a dashboard restart to mount
   the backend. Tests: `PYTHONPATH=~/.hermes/hermes-agent ~/.hermes/hermes-agent/venv/bin/pytest

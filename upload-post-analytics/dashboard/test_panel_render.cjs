@@ -56,7 +56,8 @@ const UPCOMING = { status: "ok", csrf: "test-token", videos: [{ id: "HS-2026-999
   { id: "HS-2026-031", title: "Short", publish_at: new Date(NOW + 7 * 3600000).toISOString(),
     platforms: ["youtube", "instagram", "threads", "x", "facebook", "telegram", "tiktok"], manual_platforms: ["tiktok"],
     status: "approved sha 8a306d00d642", sha256: "c".repeat(64), reasons: [], can_approve: false, can_unapprove: true,
-    cover: null, preview: {} },
+    cover: null, preview: { youtube_title: "Short", description: ["YouTube description"],
+      platform_lines: { youtube: [], instagram: ["IG text"], threads: ["Threads text"], facebook: [""] } } },
   { id: "HS-2026-997", title: "New short", publish_at: new Date(NOW + 8 * 3600000).toISOString(),
     platforms: ["tiktok", "youtube"], manual_platforms: [], status: "ready to approve", sha256: "d".repeat(64),
     reasons: [], can_approve: true, can_unapprove: false, cover: null, preview: {} },
@@ -84,7 +85,7 @@ function seriesOld(q) {
       : Object.assign({}, l, { points: l.points.map((p) => [new Date(p[0] + "T00:00:00").getTime(), p[1]]) })) };
 }
 
-async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHEDULED } = {}) {
+async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHEDULED, upcoming = UPCOMING } = {}) {
   const dom = new JSDOM("<!doctype html><div id=root></div>", { runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   useWindow(w);
@@ -102,7 +103,7 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
       const u = new URL(url, "http://x");
       const route = u.pathname.replace("/api/plugins/upload-post-analytics", "");
       const body = route === "/options" ? OPTIONS : route === "/health" ? HEALTH : route === "/series" ? series(u.searchParams)
-        : route === "/scheduled" ? scheduled : route === "/upcoming" ? UPCOMING : null;
+        : route === "/scheduled" ? scheduled : route === "/upcoming" ? upcoming : null;
       return body ? Promise.resolve(JSON.parse(JSON.stringify(body))) : Promise.reject(new Error("404 " + route));
     },
     components: {
@@ -193,10 +194,33 @@ test("upcoming approval readiness and preview render", async () => {
   assert.ok(state(fresh, "tiktok").classList.contains("upa-pi-selected"));
   assert.ok(state(draft, "tiktok").classList.contains("upa-pi-not_selected"));
   assert.ok(state(manual, "youtube").classList.contains("upa-pi-manual"));
+  assert.equal((legacy.querySelector("details").textContent.match(/youtube:/gi) || []).length, 1);
+  assert.match(legacy.querySelector("details").textContent, /YouTube description/);
+  for (const name of ["instagram", "threads"])
+    assert.equal((legacy.querySelector("details").textContent.match(new RegExp(name + ":", "gi")) || []).length, 1);
+  assert.doesNotMatch(legacy.querySelector("details").textContent, /facebook:/i);
   await p.click(p.$(".upa-upcoming-item summary"));
   assert.match(p.container.textContent, /Telegram line/);
   await p.unmount();
 });
+
+if (process.env.UPA_UPCOMING_JSON) {
+  test("read-only live HS-031 preview", async (t) => {
+    const upcoming = JSON.parse(fs.readFileSync(process.env.UPA_UPCOMING_JSON, "utf8"));
+    const p = await mount({ upcoming });
+    t.after(() => p.unmount());
+    const row = p.$$(".upa-upcoming-item").find((r) => r.querySelector("b").textContent.startsWith("HS-2026-031 ·"));
+    assert.ok(row);
+    const instagram = [...row.querySelectorAll(".upa-job-icons .upa-pi")].find((i) => i.title.startsWith("instagram:"));
+    assert.ok(instagram.classList.contains("upa-pi-selected"));
+    const preview = row.querySelector("details");
+    assert.equal((preview.textContent.match(/youtube:/gi) || []).length, 1);
+    const labels = [...preview.children].map((e) => /^([a-z]+): /i.exec(e.textContent))
+      .filter(Boolean).map((m) => m[1].toLowerCase());
+    assert.equal(new Set(labels).size, labels.length);
+    console.log("HS-031 live package: instagram selected; one YouTube label; no duplicate platform labels.");
+  });
+}
 
 for (const [name, series] of [["current backend", seriesNew], ["pre-range backend (not restarted)", seriesOld]]) {
   test("channel and post stay rendered across every range: " + name, async () => {
@@ -306,9 +330,48 @@ test("scheduled list: Jerusalem time, relative, icon states, expand, recent resu
   const links = [...recent.querySelectorAll("a.upa-pi")];
   assert.deepEqual(links.map((a) => a.getAttribute("href")), ["https://youtube.com/shorts/a"]);
   const failed = [...recent.querySelectorAll(".upa-pi")].find((i) => /instagram/.test(i.getAttribute("title")));
-  assert.match(failed.getAttribute("title"), /failed — Video too long/);
-  assert.ok(failed.className.includes("upa-res-failed"));
+  assert.match(failed.getAttribute("title"), /instagram: selected for publishing · failed$/);
+  assert.equal(failed.querySelector(".upa-res-badge"), null);
   assert.match(recent.textContent, /1 d ago/);
+});
+
+test("row errors: only last 48 hours, hidden until badge click, independent of captions", async (t) => {
+  const scheduled = JSON.parse(JSON.stringify(SCHEDULED));
+  scheduled.recent[0].errors = [
+    { ts: NOW_S - 60, platform: "instagram", message: "Video too long" },
+    { ts: NOW_S - 48 * 3600 + 5, platform: "youtube", message: "Boundary error" },
+    { ts: NOW_S - 48 * 3600 - 1, platform: "threads", message: "Stale error" },
+    { ts: NOW_S + 3600, platform: "facebook", message: "Future error" },
+  ];
+  const p = await mount({ scheduled });
+  t.after(() => p.unmount());
+  const job = p.$$(".upa-job")[1];
+  const badge = job.querySelector(".upa-row-errors button");
+  assert.equal(badge.textContent, "! 2");
+  assert.equal(badge.getAttribute("aria-expanded"), "false");
+  assert.equal(job.querySelector(".upa-row-error-panel"), null);
+  assert.doesNotMatch(job.textContent, /Video too long|Boundary error|Stale error|Future error/);
+  assert.ok([...job.querySelectorAll("[title]")].every((e) => !/Video too long/.test(e.title)));
+  await p.click(job.querySelector(".upa-job-row"));
+  assert.ok(job.querySelector(".upa-job-details"));
+  assert.doesNotMatch(job.textContent, /Video too long/);
+  await p.click(badge);
+  assert.equal(badge.getAttribute("aria-expanded"), "true");
+  assert.equal(job.querySelectorAll(".upa-row-error-panel li").length, 2);
+  assert.match(job.textContent, /Video too long/);
+  assert.doesNotMatch(job.textContent, /Stale error|Future error/);
+  await p.click(badge);
+  assert.equal(job.querySelector(".upa-row-error-panel"), null);
+});
+
+test("old row errors have no badge or panel", async (t) => {
+  const scheduled = JSON.parse(JSON.stringify(SCHEDULED));
+  scheduled.recent[0].errors = [{ ts: NOW_S - 3 * 86400, message: "Stale error" }];
+  const p = await mount({ scheduled });
+  t.after(() => p.unmount());
+  assert.equal(p.$(".upa-row-errors"), null);
+  await p.click(p.$$(".upa-job-row")[1]);
+  assert.doesNotMatch(p.container.textContent, /Stale error|Video too long/);
 });
 
 test("hand-published platform: dashed link item with no numbers, no chart line", async () => {

@@ -311,7 +311,7 @@ def _job_platforms(selected: list[str], accounts: dict[str, dict], results: dict
     return out
 
 
-def _job_out(row, accounts, results) -> dict[str, Any]:
+def _job_out(row, accounts, results, now) -> dict[str, Any]:
     try:
         selected = [p for p in json.loads(row["platforms"] or "[]") if isinstance(p, str)]
     except ValueError:
@@ -320,7 +320,18 @@ def _job_out(row, accounts, results) -> dict[str, Any]:
         content = json.loads(row["platform_content"] or "{}")
     except ValueError:
         content = {}
+    errors = []
+    for platform, result in results.get(row["job_id"], {}).items():
+        # Poll timestamps refresh; the upload or departed slot anchors the error's age.
+        ts = result["upload_ts"] or row["gone_at"] or row["scheduled_at"]
+        if result["error"] and ts is not None and now - 48 * 3600 <= ts <= now:
+            errors.append({"platform": platform, "ts": ts, "message": result["error"]})
+    if not errors and row["status"] in ("failed", "retryable") and row["status_message"]:
+        ts = row["gone_at"] or row["scheduled_at"]
+        if ts is not None and now - 48 * 3600 <= ts <= now:
+            errors.append({"platform": None, "ts": ts, "message": row["status_message"]})
     return {
+        "errors": errors,
         "job_id": row["job_id"], "profile": row["profile"], "scheduled_at": row["scheduled_at"],
         "post_type": row["post_type"], "external_id": row["external_id"], "title": row["title"],
         "source_filename": row["source_filename"], "original_timezone": row["original_timezone"],
@@ -360,8 +371,8 @@ def get_scheduled() -> dict[str, Any]:
     for r in res_rows:
         results.setdefault(r["job_id"], {})[r["platform"]] = {
             "status": r["status"], "post_url": r["post_url"], "error": r["error"], "upload_ts": r["upload_ts"]}
-    upcoming = [_job_out(j, accounts, results) for j in jobs if j["gone_at"] is None]
-    recent = [_job_out(j, accounts, results) for j in jobs if j["gone_at"] is not None]
+    upcoming = [_job_out(j, accounts, results, now) for j in jobs if j["gone_at"] is None]
+    recent = [_job_out(j, accounts, results, now) for j in jobs if j["gone_at"] is not None]
     recent.sort(key=lambda j: j["scheduled_at"], reverse=True)
     return {"status": "ok", "now": now, "collecting": True, "upcoming": upcoming, "recent": recent,
             "links": UPLOAD_POST_LINKS}

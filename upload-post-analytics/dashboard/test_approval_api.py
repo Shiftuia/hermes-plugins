@@ -85,6 +85,25 @@ def test_per_platform_manual_route_from_package(site):
     assert client.get(url).json()['videos'][0]['manual_platforms'] == []
 
 
+@pytest.mark.parametrize('step,manual', [
+    ('Instagram: pin the first comment (Upload-Post posts it, pinning is by hand).', False),
+    ('Instagram: Upload-Post uploads the video; pin the comment by hand.', False),
+    ('Instagram: upload the video via API then pin the comment by hand.', False),
+    ('Instagram: upload the cover by hand after publishing.', False),
+    ('Instagram: upload the clean export by hand.', True),
+    ('Instagram: upload the video manually.', True),
+    ('Instagram: manual upload required.', True),
+    ('Instagram is not connected to Upload-Post.', True),
+])
+def test_manual_upload_not_comment_pinning(site, step, manual):
+    client, package, path, _ = site
+    package['platforms']['instagram'] = {'caption': 'Clip'}
+    package['manual_steps'] = [step]
+    path.write_text(json.dumps(package))
+    row = client.get('/api/plugins/upload-post-analytics/upcoming').json()['videos'][0]
+    assert ('instagram' in row['manual_platforms']) is manual
+
+
 def test_june_preview_icon_and_cover(site):
     client, package, _, _ = site
     video = api.CONTENT.parent.parent / 'grandma-june/content/GJ-2026-999'

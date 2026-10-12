@@ -455,12 +455,12 @@
   function PlatformIcon({ p, showResult }) {
     const r = showResult ? p.result : null;
     const tip = p.platform + ": " + STATE_TIP[p.state]
-      + (r ? " · " + (RESULT_TIP[r.status] || r.status) + (r.error ? " — " + r.error : "") : "");
+      + (r ? " · " + (RESULT_TIP[r.status] || r.status) : "");
     const color = p.state === "selected" || p.state === "selected_unconnected" ? (ICONS[p.platform] || [""])[0] : null;
-    const cls = "upa-pi upa-pi-" + p.state + (r ? " upa-res-" + r.status : "");
+    const cls = "upa-pi upa-pi-" + p.state + (r && !["failed", "retryable"].includes(r.status) ? " upa-res-" + r.status : "");
     const body = [h(Glyph, { key: "g", platform: p.platform }),
-      r && h("span", { key: "b", className: "upa-res-badge", "aria-hidden": true },
-        r.status === "completed" ? "✓" : r.status === "failed" || r.status === "retryable" ? "!" : "·")];
+      r && !["failed", "retryable"].includes(r.status) && h("span", { key: "b", className: "upa-res-badge", "aria-hidden": true },
+        r.status === "completed" ? "✓" : "·")];
     const props = { className: cls, title: tip, "aria-label": tip, style: color ? { color: color } : null };
     if (r && r.post_url) {
       return h("a", Object.assign(props, { href: r.post_url, target: "_blank", rel: "noopener noreferrer",
@@ -494,7 +494,6 @@
             h("div", { className: "upa-job-caption-head" },
               h(PlatformIcon, { p: p, showResult: false }),
               h("span", { className: "upa-cap" }, p.platform),
-              r && r.error && h("span", { className: "upa-bad" }, r.error),
               r && r.post_url && h("a", { href: r.post_url, target: "_blank", rel: "noopener noreferrer" }, "open post ↗")),
             c.title && h("div", { className: "upa-job-title" }, c.title),
             h("div", { className: "upa-job-text" }, c.caption || (c.title ? "" : h("span", { className: "upa-muted" },
@@ -502,8 +501,21 @@
         }),
         h("div", { className: "upa-muted" },
           ["job " + job.job_id, job.post_type, job.source_filename, job.original_timezone && "scheduled in " + job.original_timezone,
-            job.status && "status " + job.status + (job.status_message ? " — " + job.status_message : "")]
+            job.status && "status " + job.status]
             .filter(Boolean).join(" · "))));
+  }
+
+  function RowErrors({ errors, nowSec }) {
+    const [open, setOpen] = hooks.useState(false);
+    const recent = (errors || []).filter(function (e) { return e.ts >= nowSec - 48 * 3600 && e.ts <= nowSec; });
+    if (!recent.length) return null;
+    return h("div", { className: "upa-row-errors" },
+      h("button", { type: "button", className: "upa-chip upa-bad", "aria-expanded": open,
+        "aria-label": recent.length + " errors in the last 48 hours",
+        onClick: function (e) { e.stopPropagation(); setOpen(!open); } }, "! " + recent.length),
+      open && h("ul", { className: "upa-row-error-panel" }, recent.map(function (e, i) {
+        return h("li", { key: i }, fmtSlot(e.ts) + " · " + (e.platform || "job") + ": " + e.message);
+      })));
   }
 
   function JobRow({ job, nowSec, recent, link }) {
@@ -524,6 +536,7 @@
         h("a", { className: "upa-job-link", href: link, target: "_blank", rel: "noopener noreferrer",
           title: recent ? "Open Upload-Post history" : "Open Upload-Post calendar (no per-job page exists)",
           onClick: function (e) { e.stopPropagation(); } }, "↗")),
+      h(RowErrors, { errors: job.errors, nowSec: nowSec }),
       open && h(JobDetails, { job: job }));
   }
 
@@ -613,7 +626,9 @@
             h("div", null, "YouTube: " + (v.preview.youtube_title || "—")),
             h("div", { className: "upa-job-text" }, (v.preview.description || []).join("\n")),
             h("div", null, "First comment: " + (v.preview.first_comment || "—")),
-            Object.entries(v.preview.platform_lines || {}).map(function (entry) {
+            Object.entries(v.preview.platform_lines || {}).filter(function (entry) {
+              return entry[0].toLowerCase() !== "youtube" && entry[1].join(" ").trim();
+            }).map(function (entry) {
               return h("div", { key: entry[0] }, entry[0] + ": " + entry[1].join(" "));
             })));
       }) : h("div", { className: "upa-muted" }, "No unpublished packages."))));

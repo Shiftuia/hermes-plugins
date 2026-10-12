@@ -132,8 +132,10 @@ def assess(path, now=None):
 
 def _manual_platforms(data):
     steps = data.get('manual_steps') or []
+    manual_upload = (r'(?:not connected to Upload-Post|manual upload|\bupload(?:s|ed|ing)?\b(?!-)'
+                     r'(?:(?!\b(?:pin\w*|comment\w*|cover|thumbnail)\b)[^.\n;()])*(?:by hand|manually))')
     return [name for name in (data.get('platforms') or {})
-            if any(re.search(rf'\b{re.escape(name)}\b[^.\n]*(?:by hand|manual upload)', step, re.IGNORECASE)
+            if any(re.search(rf'\b{re.escape(name)}\b[^.\n]*{manual_upload}', step, re.IGNORECASE)
                    for step in steps if isinstance(step, str))]
 
 

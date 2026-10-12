@@ -192,6 +192,36 @@ def test_scheduled_recent_carries_results(jobs_db):
     assert done["cover_url"] == "https://t/1.jpg"
 
 
+def test_scheduled_errors_use_48h_event_window_not_poll_time(jobs_db, monkeypatch):
+    now = int(time.time())
+    monkeypatch.setattr(plugin_api.time, 'time', lambda: now)
+    with sqlite3.connect(jobs_db) as con:
+        con.execute("UPDATE scheduled_jobs SET gone_at=?, scheduled_at=? WHERE job_id='done'",
+                    (now - 4 * 86400, now - 4 * 86400))
+        con.execute("UPDATE scheduled_results SET error='old', upload_ts=NULL, updated_at=? WHERE job_id='done'",
+                    (now,))
+    assert plugin_api.get_scheduled()['recent'][0]['errors'] == []
+    for age, visible in [(48 * 3600, True), (48 * 3600 + 1, False), (60, True), (-1, False)]:
+        with sqlite3.connect(jobs_db) as con:
+            con.execute("UPDATE scheduled_results SET upload_ts=? WHERE job_id='done' AND platform='instagram'",
+                        (now - age,))
+        errors = plugin_api.get_scheduled()['recent'][0]['errors']
+        assert bool(errors) is visible
+        if visible:
+            assert errors == [{'platform': 'instagram', 'ts': now - age, 'message': 'old'}]
+
+
+def test_scheduled_job_error_fallback(jobs_db, monkeypatch):
+    now = int(time.time())
+    monkeypatch.setattr(plugin_api.time, 'time', lambda: now)
+    with sqlite3.connect(jobs_db) as con:
+        con.execute("DELETE FROM scheduled_results")
+        con.execute("UPDATE scheduled_jobs SET status='failed', status_message='Job failed', gone_at=? WHERE job_id='done'",
+                    (now - 60,))
+    assert plugin_api.get_scheduled()['recent'][0]['errors'] == [
+        {'platform': None, 'ts': now - 60, 'message': 'Job failed'}]
+
+
 def test_scheduled_before_collector_upgrade(db):
     res = plugin_api.get_scheduled()
     assert res["status"] == "ok" and res["collecting"] is False and res["upcoming"] == []
