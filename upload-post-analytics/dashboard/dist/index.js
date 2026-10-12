@@ -313,10 +313,22 @@
         })));
   }
 
+  function useNowSeconds() {
+    const [nowSec, setNowSec] = hooks.useState(function () { return Math.floor(Date.now() / 1000); });
+    hooks.useEffect(function () {
+      const t = setInterval(function () { setNowSec(Math.floor(Date.now() / 1000)); }, 30000);
+      return function () { clearInterval(t); };
+    }, []);
+    return nowSec;
+  }
+
   function HealthStrip({ q }) {
+    const [open, setOpen] = hooks.useState(false);
+    const nowSec = useNowSeconds();
     const d = q.data;
     if (!d) return h("div", { className: "upa-health" }, q.error ? "Health unavailable: " + q.error : "Loading health…");
     if (d.status !== "ok") return h("div", { className: "upa-health upa-bad" }, d.error);
+    const recent = recentErrors(d.errors, nowSec);
     const rl = d.rate_limit;
     const lowRl = rl.limit && rl.min_remaining != null && rl.min_remaining < rl.limit * 0.2;
     const last = d.last_run;
@@ -330,9 +342,11 @@
         chip(false, d.runs.requests + " requests"),
         chip(lowRl, "min remaining " + (rl.min_remaining == null ? "—" : rl.min_remaining + "/" + rl.limit)),
         chip(rl.count_429 > 0, rl.count_429 + "× 429"),
-        chip(d.error_count > 0, d.error_count + " errors")),
-      d.errors.length > 0 && h("table", { className: "upa-errors" },
-        h("tbody", null, d.errors.map(function (e, i) {
+        h("button", { type: "button", className: "upa-chip " + (recent.length ? "upa-bad" : "upa-ok"),
+          "aria-expanded": open, "aria-label": recent.length + " errors in the last 48 hours",
+          onClick: function () { setOpen(!open); } }, "! " + recent.length + " errors · 48 h")),
+      open && recent.length > 0 && h("table", { className: "upa-errors" },
+        h("tbody", null, recent.map(function (e, i) {
           return h("tr", { key: i },
             h("td", null, new Date(e.ts * 1000).toLocaleString()),
             h("td", null, [e.profile, e.platform].filter(Boolean).join("/")),
@@ -480,34 +494,48 @@
       orderedPlatforms(platforms).map(function (p) { return h(PlatformIcon, { key: p.platform, p: p, showResult: showResult }); }));
   }
 
+  function PlatformContent({ platforms, content }) {
+    return h("div", { className: "upa-job-captions" }, orderedPlatforms(platforms).map(function (p) {
+      const raw = content[p.platform] || {};
+      const c = { title: (raw.title || "").trim(), caption: (raw.caption || "").trim(),
+        firstComment: (raw.firstComment || "").trim() };
+      const url = p.result && p.result.post_url;
+      if (!c.title && !c.caption && !c.firstComment && !url) return null;
+      return h("div", { key: p.platform, className: "upa-job-caption" },
+        h("div", { className: "upa-job-caption-head" },
+          h(PlatformIcon, { p: p, showResult: false }),
+          h("span", { className: "upa-cap" }, p.platform + ":"),
+          url && h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, "open post ↗")),
+        c.title && h("div", { className: "upa-job-title" }, c.title),
+        c.caption && h("div", { className: "upa-job-text" }, c.caption),
+        c.firstComment && h("div", { className: "upa-job-text" }, "First comment: " + c.firstComment));
+    }));
+  }
+
   function JobDetails({ job }) {
-    const selected = orderedPlatforms(job.platforms).filter(function (p) { return p.state === "selected" || p.state === "selected_unconnected"; });
+    const content = Object.assign({}, job.platform_content);
+    job.platforms.forEach(function (p) {
+      if (["selected", "selected_unconnected"].includes(p.state) && !content[p.platform]) {
+        content[p.platform] = { caption: "No per-platform text; Upload-Post uses the job title: " + (job.title || "—") };
+      }
+    });
     return h("div", { className: "upa-job-details" },
       job.cover_url && h("img", { className: "upa-job-cover", src: job.cover_url, alt: "Cover", loading: "lazy",
         referrerPolicy: "no-referrer" }),
       h(PlatformSet, { platforms: job.platforms }),
-      h("div", { className: "upa-job-captions" },
-        selected.map(function (p) {
-          const c = job.platform_content[p.platform] || {};
-          const r = p.result;
-          return h("div", { key: p.platform, className: "upa-job-caption" },
-            h("div", { className: "upa-job-caption-head" },
-              h(PlatformIcon, { p: p, showResult: false }),
-              h("span", { className: "upa-cap" }, p.platform),
-              r && r.post_url && h("a", { href: r.post_url, target: "_blank", rel: "noopener noreferrer" }, "open post ↗")),
-            c.title && h("div", { className: "upa-job-title" }, c.title),
-            h("div", { className: "upa-job-text" }, c.caption || (c.title ? "" : h("span", { className: "upa-muted" },
-              "No per-platform text; Upload-Post uses the job title: " + (job.title || "—")))));
-        }),
-        h("div", { className: "upa-muted" },
-          ["job " + job.job_id, job.post_type, job.source_filename, job.original_timezone && "scheduled in " + job.original_timezone,
-            job.status && "status " + job.status]
-            .filter(Boolean).join(" · "))));
+      h(PlatformContent, { platforms: job.platforms, content: content }),
+      h("div", { className: "upa-muted" },
+        ["job " + job.job_id, job.post_type, job.source_filename, job.original_timezone && "scheduled in " + job.original_timezone,
+          job.status && "status " + job.status].filter(Boolean).join(" · ")));
+  }
+
+  function recentErrors(errors, nowSec) {
+    return (errors || []).filter(function (e) { return e.ts >= nowSec - 48 * 3600 && e.ts <= nowSec; });
   }
 
   function RowErrors({ errors, nowSec }) {
     const [open, setOpen] = hooks.useState(false);
-    const recent = (errors || []).filter(function (e) { return e.ts >= nowSec - 48 * 3600 && e.ts <= nowSec; });
+    const recent = recentErrors(errors, nowSec);
     if (!recent.length) return null;
     return h("div", { className: "upa-row-errors" },
       h("button", { type: "button", className: "upa-chip upa-bad", "aria-expanded": open,
@@ -541,11 +569,7 @@
   }
 
   function ScheduledSection({ q }) {
-    const [nowSec, setNowSec] = hooks.useState(function () { return Math.floor(Date.now() / 1000); });
-    hooks.useEffect(function () {
-      const t = setInterval(function () { setNowSec(Math.floor(Date.now() / 1000)); }, 30000);
-      return function () { clearInterval(t); };
-    }, []);
+    const nowSec = useNowSeconds();
     const d = q.data;
     let body;
     if (!d) {
@@ -574,6 +598,22 @@
           h("h3", { className: "upa-subhead" }, "Scheduled"),
           h("span", { className: "upa-muted" }, "Times in " + LOCAL_TZ + ". Colour = selected · grey = not selected · dashed = published by hand. Click a row for captions.")),
         body));
+  }
+
+  function UpcomingPreview({ video }) {
+    const preview = video.preview || {};
+    const content = {};
+    Object.entries(preview.platform_lines || {}).forEach(function (entry) {
+      const caption = entry[1].join("\n").trim();
+      if (caption && entry[0].toLowerCase() !== "youtube") content[entry[0].toLowerCase()] = { caption: caption };
+    });
+    content.youtube = { title: preview.youtube_title, caption: (preview.description || []).join("\n").trim(),
+      firstComment: preview.first_comment };
+    const platforms = [...new Set((video.platforms || []).concat(Object.keys(content)))].map(function (name) {
+      return { platform: name, state: (video.manual_platforms || []).includes(name) ? "manual" :
+        (video.platforms || []).includes(name) ? "selected" : "not_selected" };
+    });
+    return h(PlatformContent, { platforms: platforms, content: content });
   }
 
   function UpcomingSection({ q }) {
@@ -623,20 +663,16 @@
           v.reasons.length > 0 && h("div", { className: "upa-muted" }, v.reasons.join(" · ")),
           h("details", null, h("summary", null, "Preview"),
             v.cover && h("img", { src: v.cover, alt: v.id + " cover", className: "upa-job-cover", loading: "lazy" }),
-            h("div", null, "YouTube: " + (v.preview.youtube_title || "—")),
-            h("div", { className: "upa-job-text" }, (v.preview.description || []).join("\n")),
-            h("div", null, "First comment: " + (v.preview.first_comment || "—")),
-            Object.entries(v.preview.platform_lines || {}).filter(function (entry) {
-              return entry[0].toLowerCase() !== "youtube" && entry[1].join(" ").trim();
-            }).map(function (entry) {
-              return h("div", { key: entry[0] }, entry[0] + ": " + entry[1].join(" "));
-            })));
+            h(UpcomingPreview, { video: v })));
       }) : h("div", { className: "upa-muted" }, "No unpublished packages."))));
   }
 
   function UploadPostAnalyticsPage() {
     const opts = useQuery("/options");
-    const [profile, setProfile] = hooks.useState("");
+    const profileKey = "upload-post-analytics:selected-profile:v1";
+    const [profile, setProfile] = hooks.useState(function () {
+      try { return window.localStorage.getItem(profileKey) || ""; } catch (_) { return ""; }
+    });
     const [target, setTarget] = hooks.useState("channel");
     const [metric, setMetric] = hooks.useState("primary");
     const [mode, setMode] = hooks.useState("cumulative");
@@ -649,11 +685,15 @@
 
     const profiles = (opts.data && opts.data.profiles) || [];
     hooks.useEffect(function () {
-      if (!profile && profiles.length) {
+      if (!profiles.length) return;
+      if (!profiles.some(function (p) { return p.profile === profile; })) {
         const withData = profiles.find(function (p) { return p.posts.length; }) || profiles[0];
         setProfile(withData.profile);
+        setTarget("channel");
+        return;
       }
-    }, [profiles.length]);
+      try { window.localStorage.setItem(profileKey, profile); } catch (_) {}
+    }, [profiles, profile]);
     const current = profiles.find(function (p) { return p.profile === profile; });
     const post = current && target !== "channel" ? current.posts.find(function (p) { return p.key === target; }) : null;
 

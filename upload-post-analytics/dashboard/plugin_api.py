@@ -383,7 +383,8 @@ def get_health(profile: Optional[str] = None) -> dict[str, Any]:
     db = _connect()
     if db is None:
         return _not_ready()
-    since = int(time.time()) - HEALTH_WINDOW_SECONDS
+    now = int(time.time())
+    since = now - HEALTH_WINDOW_SECONDS
     with closing(db):
         runs = db.execute(
             "SELECT COUNT(*) AS n, SUM(status='ok') AS ok, SUM(COALESCE(status,'')!='ok') AS bad,"
@@ -393,11 +394,12 @@ def get_health(profile: Optional[str] = None) -> dict[str, Any]:
         rl = db.execute(
             "SELECT MAX(rl_limit) AS rl_limit, MIN(min_remaining) AS min_remaining,"
             " SUM(count_429) AS count_429 FROM rate_limits WHERE ts >= ?", (since,)).fetchone()
-        err_filter, err_args = ("AND (profile=? OR profile IS NULL)", (since, profile)) if profile else ("", (since,))
-        error_count = db.execute(f"SELECT COUNT(*) FROM errors WHERE ts >= ? {err_filter}", err_args).fetchone()[0]
+        error_since = now - 48 * 3600
+        err_filter = "AND (profile=? OR profile IS NULL)" if profile else ""
+        err_args = (error_since, now, profile) if profile else (error_since, now)
         errors = db.execute(
             f"SELECT ts, endpoint, profile, platform, status, error_code, message FROM errors"
-            f" WHERE ts >= ? {err_filter} ORDER BY ts DESC LIMIT 10", err_args).fetchall()
+            f" WHERE ts BETWEEN ? AND ? {err_filter} ORDER BY ts DESC", err_args).fetchall()
     return {
         "status": "ok",
         "window_hours": HEALTH_WINDOW_SECONDS // 3600,
@@ -406,6 +408,7 @@ def get_health(profile: Optional[str] = None) -> dict[str, Any]:
         "last_run": dict(last_run) if last_run else None,
         "rate_limit": {"limit": rl["rl_limit"], "min_remaining": rl["min_remaining"],
                        "count_429": rl["count_429"] or 0},
-        "error_count": error_count,
+        "error_count": len(errors),
+        "error_window_hours": 48,
         "errors": [dict(e) for e in errors],
     }

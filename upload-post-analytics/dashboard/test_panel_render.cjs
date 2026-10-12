@@ -85,9 +85,12 @@ function seriesOld(q) {
       : Object.assign({}, l, { points: l.points.map((p) => [new Date(p[0] + "T00:00:00").getTime(), p[1]]) })) };
 }
 
-async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHEDULED, upcoming = UPCOMING } = {}) {
-  const dom = new JSDOM("<!doctype html><div id=root></div>", { runScripts: "outside-only", pretendToBeVisual: true });
+async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHEDULED, upcoming = UPCOMING,
+  health = HEALTH, options = OPTIONS, storedProfile = null } = {}) {
+  const dom = new JSDOM("<!doctype html><div id=root></div>", { url: "http://localhost:10000", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
+  w.Date.now = () => Date.now();
+  if (storedProfile !== null) w.localStorage.setItem("upload-post-analytics:selected-profile:v1", storedProfile);
   useWindow(w);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const h = React.createElement;
@@ -102,7 +105,7 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
     fetchJSON: (url) => {
       const u = new URL(url, "http://x");
       const route = u.pathname.replace("/api/plugins/upload-post-analytics", "");
-      const body = route === "/options" ? OPTIONS : route === "/health" ? HEALTH : route === "/series" ? series(u.searchParams)
+      const body = route === "/options" ? options : route === "/health" ? health : route === "/series" ? series(u.searchParams)
         : route === "/scheduled" ? scheduled : route === "/upcoming" ? upcoming : null;
       return body ? Promise.resolve(JSON.parse(JSON.stringify(body))) : Promise.reject(new Error("404 " + route));
     },
@@ -166,8 +169,93 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
     alive(what + " / custom inverted");
     assert.ok(container.textContent.includes("must be after"), what + ": inverted range not flagged");
   }
-  return { container, errors, $, $$, setValue, act, click, hover, alive, everyRange, unmount: () => act(() => root.unmount()) };
+  return { container, errors, $, $$, setValue, act, click, hover, alive, everyRange, storage: w.localStorage,
+    unmount: () => act(() => root.unmount()) };
 }
+
+test("global and row error lists share an inclusive 48-hour cutoff and toggle independently", async (t) => {
+  const errors = [
+    { ts: NOW_S, platform: "youtube", message: "Now error" },
+    { ts: NOW_S - 48 * 3600, platform: "instagram", message: "Exact boundary" },
+    { ts: NOW_S - 48 * 3600 - 1, message: "Too old" },
+    { ts: NOW_S + 1, message: "Future" },
+  ];
+  const scheduled = JSON.parse(JSON.stringify(SCHEDULED));
+  scheduled.recent[0].errors = errors;
+  const originalNow = Date.now;
+  Date.now = () => NOW_S * 1000;
+  t.after(() => { Date.now = originalNow; });
+  const p = await mount({ scheduled, health: { ...HEALTH, error_count: 99, errors } });
+  t.after(() => p.unmount());
+  const global = p.$(".upa-health button");
+  const row = p.$(".upa-row-errors button");
+  for (const badge of [global, row]) {
+    assert.equal(badge.getAttribute("aria-label"), "2 errors in the last 48 hours");
+    assert.equal(badge.getAttribute("aria-expanded"), "false");
+  }
+  assert.equal(p.$(".upa-errors, .upa-row-error-panel"), null);
+  await p.click(global);
+  assert.equal(p.$$(".upa-errors tr").length, 2);
+  assert.equal(row.getAttribute("aria-expanded"), "false");
+  await p.click(row);
+  assert.equal(p.$$(".upa-row-error-panel li").length, 2);
+  assert.match(p.$(".upa-errors").textContent, /Exact boundary/);
+  assert.doesNotMatch(p.container.textContent, /Too old|Future/);
+  await p.click(global);
+  await p.click(row);
+  assert.equal(p.$(".upa-errors, .upa-row-error-panel"), null);
+});
+
+for (const storedProfile of ["grandmajunecooks", "removed", null]) {
+  test("profile restore, change and options refresh: " + storedProfile, async () => {
+    const options = JSON.parse(JSON.stringify(OPTIONS));
+    options.profiles.push({ ...options.profiles[0], profile: "grandmajunecooks" });
+    const p = await mount({ options, storedProfile });
+    const key = "upload-post-analytics:selected-profile:v1";
+    const expected = storedProfile === "grandmajunecooks" ? storedProfile : "holyshifted";
+    assert.equal(p.$("select").value, expected);
+    assert.equal(p.storage.getItem(key), expected);
+    await p.setValue(p.$("select"), "grandmajunecooks", "change");
+    assert.equal(p.storage.getItem(key), "grandmajunecooks");
+    options.profiles.reverse();
+    await p.click(p.$(".upa-head button"));
+    assert.equal(p.$("select").value, "grandmajunecooks");
+    const saved = p.storage.getItem(key);
+    await p.unmount();
+    const reloaded = await mount({ options, storedProfile: saved });
+    assert.equal(reloaded.$("select").value, "grandmajunecooks");
+    options.profiles = options.profiles.filter((v) => v.profile !== "grandmajunecooks");
+    await reloaded.click(reloaded.$(".upa-head button"));
+    assert.equal(reloaded.$("select").value, "holyshifted");
+    assert.equal(reloaded.storage.getItem(key), "holyshifted");
+    await reloaded.unmount();
+  });
+}
+
+test("expanded Upcoming, Scheduled and Recently published share icon/text/link blocks", async (t) => {
+  const upcoming = JSON.parse(JSON.stringify(UPCOMING));
+  upcoming.videos[0].preview.platform_lines = { tiktok: ["Manual text"], instagram: ["Unselected text"], telegram: ["Telegram line"], facebook: [" "] };
+  upcoming.videos[0].manual_platforms = ["tiktok"];
+  const p = await mount({ upcoming });
+  t.after(() => p.unmount());
+  await p.click(p.$$(".upa-job-row")[0]);
+  await p.click(p.$$(".upa-job-row")[1]);
+  const blocks = [p.$(".upa-upcoming-item details .upa-job-captions"), ...p.$$(".upa-job-details .upa-job-captions")];
+  for (const block of blocks) {
+    assert.ok(block);
+    for (const caption of block.querySelectorAll(".upa-job-caption")) {
+      assert.ok(caption.querySelector(".upa-job-caption-head .upa-pi"));
+      assert.ok(caption.querySelector(".upa-job-caption-head .upa-cap"));
+      assert.ok([...caption.querySelectorAll(".upa-job-text, .upa-job-title")].every((e) => e.textContent.trim()));
+    }
+  }
+  assert.deepEqual([...blocks[0].querySelectorAll(".upa-cap")].map((e) => e.textContent), ["youtube:", "instagram:", "telegram:", "tiktok:"]);
+  assert.ok(blocks[0].querySelector(".upa-pi-manual"));
+  assert.ok(blocks[0].querySelector(".upa-pi-not_selected"));
+  assert.equal(blocks[0].querySelector("a"), null);
+  assert.equal(blocks[1].querySelector("a"), null);
+  assert.equal(blocks[2].querySelector("a").href, "https://youtube.com/shorts/a");
+});
 
 test("upcoming approval readiness and preview render", async () => {
   const p = await mount();

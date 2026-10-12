@@ -383,6 +383,26 @@ def test_bad_inputs(db):
     assert plugin_api.get_series(profile="brand", target="p:3", metric="primary")["lines"][0]["points"] == []
 
 
+def test_health_error_window_matches_complete_list(db, monkeypatch):
+    now = 1800000000
+    monkeypatch.setattr(plugin_api.time, 'time', lambda: now)
+    with sqlite3.connect(db) as con:
+        con.execute('DELETE FROM errors')
+        rows = [(now - i, 'brand', f'recent {i}') for i in range(12)]
+        rows += [(now - 48 * 3600, 'brand', 'boundary'),
+                 (now - 48 * 3600 - 1, 'brand', 'stale'),
+                 (now + 1, 'brand', 'future'),
+                 (now, 'other', 'other profile'), (now, None, 'global')]
+        con.executemany('INSERT INTO errors(ts,profile,message) VALUES (?,?,?)', rows)
+    res = plugin_api.get_health(profile='brand')
+    assert res['error_window_hours'] == 48
+    assert res['error_count'] == len(res['errors']) == 14
+    messages = {e['message'] for e in res['errors']}
+    assert {'boundary', 'global'} <= messages
+    assert not {'stale', 'future', 'other profile'} & messages
+    assert plugin_api.get_health()['error_count'] == 15
+
+
 def test_health_counts_last_24h_only(db):
     res = plugin_api.get_health(profile="brand")
     assert res["runs"] == {"count": 1, "ok": 1, "failed": 0, "requests": 30}
