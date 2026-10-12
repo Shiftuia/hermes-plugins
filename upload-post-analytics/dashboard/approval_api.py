@@ -124,6 +124,13 @@ def assess(path, now=None):
             'can_unapprove': not owner and bool(approval) and not has_state}
 
 
+def _manual_platforms(data):
+    steps = data.get('manual_steps') or []
+    return [name for name in (data.get('platforms') or {})
+            if any(re.search(rf'\b{re.escape(name)}\b[^.\n]*(?:by hand|manual upload)', step, re.IGNORECASE)
+                   for step in steps if isinstance(step, str))]
+
+
 def _preview(data):
     platforms = data.get('platforms') or {}
     youtube = platforms.get('youtube') or {}
@@ -194,6 +201,8 @@ def upcoming(response: Response):
                           'publish_at': release.isoformat() if release else None, 'planned': item['planned'],
                           'manual': item['manual'],
                           'platforms': list((data.get('platforms') or {}).keys()),
+                          'manual_platforms': (list((data.get('platforms') or {}).keys()) if item['manual']
+                                               else _manual_platforms(data)),
                           'status': item['status'], 'sha256': item['digest'], 'reasons': item['reasons'],
                           'can_approve': item['can_approve'], 'can_unapprove': item['can_unapprove'],
                           'preview': _preview(data), 'cover': f'/api/plugins/upload-post-analytics/cover/{path.parent.name}'})

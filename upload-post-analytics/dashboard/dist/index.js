@@ -398,9 +398,11 @@
     reddit: ["#FF4500", "M12 0C5.373 0 0 5.373 0 12c0 3.314 1.343 6.314 3.515 8.485l-2.286 2.286C.775 23.225 1.097 24 1.738 24H12c6.627 0 12-5.373 12-12S18.627 0 12 0Zm4.388 3.199c1.104 0 1.999.895 1.999 1.999 0 1.105-.895 2-1.999 2-.946 0-1.739-.657-1.947-1.539v.002c-1.147.162-2.032 1.15-2.032 2.341v.007c1.776.067 3.4.567 4.686 1.363.473-.363 1.064-.58 1.707-.58 1.547 0 2.802 1.254 2.802 2.802 0 1.117-.655 2.081-1.601 2.531-.088 3.256-3.637 5.876-7.997 5.876-4.361 0-7.905-2.617-7.998-5.87-.954-.447-1.614-1.415-1.614-2.538 0-1.548 1.255-2.802 2.803-2.802.645 0 1.239.218 1.712.585 1.275-.79 2.881-1.291 4.64-1.365v-.01c0-1.663 1.263-3.034 2.88-3.207.188-.911.993-1.595 1.959-1.595Zm-8.085 8.376c-.784 0-1.459.78-1.506 1.797-.047 1.016.64 1.429 1.426 1.429.786 0 1.371-.369 1.418-1.385.047-1.017-.553-1.841-1.338-1.841Zm7.406 0c-.786 0-1.385.824-1.338 1.841.047 1.017.634 1.385 1.418 1.385.785 0 1.473-.413 1.426-1.429-.046-1.017-.721-1.797-1.506-1.797Zm-3.703 4.013c-.974 0-1.907.048-2.77.135-.147.015-.241.168-.183.305.483 1.154 1.622 1.964 2.953 1.964 1.33 0 2.47-.81 2.953-1.964.057-.137-.037-.29-.184-.305-.863-.087-1.795-.135-2.769-.135Z"],
   };
 
+  const PLATFORM_ORDER = ["youtube", "instagram", "threads", "x", "facebook", "telegram", "tiktok",
+    "linkedin", "pinterest", "bluesky", "reddit"];
   const LOCAL_TZ = "Asia/Jerusalem";
   const STATE_TIP = {
-    selected: "selected", not_selected: "not selected", manual: "manual — not connected to Upload-Post",
+    selected: "selected for publishing", not_selected: "not selected", manual: "published by hand, not via Upload-Post",
     selected_unconnected: "selected, but not connected in Upload-Post — it will be skipped",
   };
   const RESULT_TIP = { completed: "published", failed: "failed", skipped: "skipped (not connected)",
@@ -467,11 +469,23 @@
     return h("span", Object.assign(props, { role: "img" }), body);
   }
 
+  function orderedPlatforms(platforms) {
+    const byName = new Map(platforms.map(function (p) { return [p.platform, p]; }));
+    return PLATFORM_ORDER.concat([...byName.keys()].filter(function (name) { return !PLATFORM_ORDER.includes(name); }).sort())
+      .map(function (name) { return byName.get(name) || { platform: name, state: "not_selected" }; });
+  }
+
+  function PlatformSet({ platforms, showResult }) {
+    return h("span", { className: "upa-job-icons", "aria-label": "Publishing platforms" },
+      orderedPlatforms(platforms).map(function (p) { return h(PlatformIcon, { key: p.platform, p: p, showResult: showResult }); }));
+  }
+
   function JobDetails({ job }) {
-    const selected = job.platforms.filter(function (p) { return p.state === "selected" || p.state === "selected_unconnected"; });
+    const selected = orderedPlatforms(job.platforms).filter(function (p) { return p.state === "selected" || p.state === "selected_unconnected"; });
     return h("div", { className: "upa-job-details" },
       job.cover_url && h("img", { className: "upa-job-cover", src: job.cover_url, alt: "Cover", loading: "lazy",
         referrerPolicy: "no-referrer" }),
+      h(PlatformSet, { platforms: job.platforms }),
       h("div", { className: "upa-job-captions" },
         selected.map(function (p) {
           const c = job.platform_content[p.platform] || {};
@@ -506,8 +520,7 @@
         h("span", { className: "upa-job-profile" }, job.profile),
         h("span", { className: "upa-job-label", title: job.title || "" },
           label, job.external_id && job.title && h("span", { className: "upa-muted" }, " " + truncate(job.title, 60))),
-        h("span", { className: "upa-job-icons" },
-          job.platforms.map(function (p) { return h(PlatformIcon, { key: p.platform, p: p, showResult: recent }); })),
+        h(PlatformSet, { platforms: job.platforms, showResult: recent }),
         h("a", { className: "upa-job-link", href: link, target: "_blank", rel: "noopener noreferrer",
           title: recent ? "Open Upload-Post history" : "Open Upload-Post calendar (no per-job page exists)",
           onClick: function (e) { e.stopPropagation(); } }, "↗")),
@@ -546,7 +559,7 @@
       h(C.CardContent, { className: "upa-card" },
         h("div", { className: "upa-sched-head" },
           h("h3", { className: "upa-subhead" }, "Scheduled"),
-          h("span", { className: "upa-muted" }, "Times in " + LOCAL_TZ + ". Colour = selected · grey = connected, not selected · dashed = manual (not in Upload-Post). Click a row for captions.")),
+          h("span", { className: "upa-muted" }, "Times in " + LOCAL_TZ + ". Colour = selected · grey = not selected · dashed = published by hand. Click a row for captions.")),
         body));
   }
 
@@ -574,7 +587,7 @@
     }
     return h(C.Card, null, h(C.CardContent, { className: "upa-card" },
       h("h3", { className: "upa-subhead" }, "Upcoming"),
-      h("span", { className: "upa-muted" }, "Package approvals · publish times in " + LOCAL_TZ + ". Approve at least 3 hours ahead."),
+      h("span", { className: "upa-muted" }, "Package approvals · publish times in " + LOCAL_TZ + ". Approve at least 3 hours ahead. Colour = selected · grey = not selected · dashed = published by hand."),
       error && h("div", { role: "alert", className: "upa-bad" }, error),
       !d ? h("div", { className: "upa-muted" }, q.error || "Loading…") :
       (d.videos.length ? d.videos.map(function (v) {
@@ -586,7 +599,9 @@
                 .format(new Date(v.planned.date + "T12:00:00Z")) + " · " + v.planned.note + " (" + LOCAL_TZ + ")" : "Unscheduled"),
             h("span", { className: "upa-chip " + (v.status === "ready to approve" || v.status.startsWith("approved") || v.status.startsWith("manual · approved") ? "upa-ok" :
               v.status.startsWith("approval invalid") ? "upa-bad" : "") }, v.status),
-            h("span", { className: "upa-muted" }, v.platforms.join(" · ")),
+            h(PlatformSet, { platforms: (v.platforms || []).map(function (name) {
+              return { platform: name, state: (v.manual_platforms || []).includes(name) ? "manual" : "selected" };
+            }) }),
             !v.manual && h("span", { className: "upa-action-tip", title: v.reasons.join("; ") || "Ready to approve" },
               h("button", { type: "button", className: "upa-approve", disabled: !v.can_approve || !!busy,
                 onClick: function () { change(v, "approve"); } }, busy === v.id ? "Working…" : "Approve")),

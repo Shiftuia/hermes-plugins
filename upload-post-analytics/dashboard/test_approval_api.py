@@ -71,6 +71,20 @@ def test_ready_draft_approved_changed(site):
     assert client.get('/api/plugins/upload-post-analytics/upcoming').json()['videos'][0]['can_approve']
 
 
+def test_per_platform_manual_route_from_package(site):
+    client, package, path, _ = site
+    package['platforms'].update({'telegram': {'caption': 'Hi'}, 'tiktok': {'caption': 'Clip'}})
+    package['manual_steps'] = ['TikTok is not connected to Upload-Post: Dima uploads the clean export by hand on Tue 2026-10-13 around 20:00 Asia/Jerusalem.']
+    path.write_text(json.dumps(package))
+    url = '/api/plugins/upload-post-analytics/upcoming'
+    row = client.get(url).json()['videos'][0]
+    assert row['platforms'] == ['youtube', 'telegram', 'tiktok']
+    assert row['manual_platforms'] == ['tiktok']
+    package['manual_steps'] = []
+    path.write_text(json.dumps(package))
+    assert client.get(url).json()['videos'][0]['manual_platforms'] == []
+
+
 def test_grey_reasons_and_dispatched(site):
     _, package, path, owners = site
     package['schedule']['publish_at'] = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -103,6 +117,7 @@ def test_manual_approved_planned_and_no_mutation(site):
     row = listing['videos'][0]
     assert row['planned'] == {'date': '2026-10-14', 'note': 'evening, by hand'}
     assert row['manual'] and row['status'] == item['status']
+    assert row['manual_platforms'] == ['youtube']
     url = '/api/plugins/upload-post-analytics/approval/' + path.parent.name
     headers = {'Origin': 'http://testserver', 'X-UPA-CSRF': listing['csrf']}
     for action in ('approve', 'unapprove'):

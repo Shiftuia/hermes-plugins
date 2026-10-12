@@ -53,10 +53,17 @@ const UPCOMING = { status: "ok", csrf: "test-token", videos: [{ id: "HS-2026-999
   status: "ready to approve", sha256: "a".repeat(64), reasons: [], can_approve: true, can_unapprove: false,
   cover: null, preview: { youtube_title: "Preview title", description: ["First line"], first_comment: "Comment",
     platform_lines: { telegram: ["Telegram line"] } } },
+  { id: "HS-2026-031", title: "Short", publish_at: new Date(NOW + 7 * 3600000).toISOString(),
+    platforms: ["youtube", "instagram", "threads", "x", "facebook", "telegram", "tiktok"], manual_platforms: ["tiktok"],
+    status: "approved sha 8a306d00d642", sha256: "c".repeat(64), reasons: [], can_approve: false, can_unapprove: true,
+    cover: null, preview: {} },
+  { id: "HS-2026-997", title: "New short", publish_at: new Date(NOW + 8 * 3600000).toISOString(),
+    platforms: ["tiktok", "youtube"], manual_platforms: [], status: "ready to approve", sha256: "d".repeat(64),
+    reasons: [], can_approve: true, can_unapprove: false, cover: null, preview: {} },
   { id: "HS-2026-998", title: "Draft", publish_at: null, platforms: [], status: "draft", sha256: "b".repeat(64),
     reasons: ["publish_at is not set"], can_approve: false, can_unapprove: false, cover: null, preview: {} },
   { id: "HS-2026-032", title: "Manual", publish_at: null, planned: { date: "2026-10-14", note: "evening, by hand" },
-    manual: true, platforms: ["youtube"], status: "manual · approved db381938", sha256: "db381938" + "c".repeat(56),
+    manual: true, platforms: ["youtube"], manual_platforms: ["youtube"], status: "manual · approved db381938", sha256: "db381938" + "c".repeat(56),
     reasons: [], can_approve: false, can_unapprove: false, cover: null, preview: {} }] };
 
 // Current backend: daily points are "YYYY-MM-DD" strings and the range is echoed back.
@@ -164,16 +171,28 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
 test("upcoming approval readiness and preview render", async () => {
   const p = await mount();
   const buttons = p.$$(".upa-approve");
-  assert.equal(buttons.length, 2);
+  assert.equal(buttons.length, 4);
   assert.equal(buttons[0].disabled, false);
-  assert.equal(buttons[1].disabled, true);
-  assert.match(buttons[1].parentElement.title, /publish_at is not set/);
-  const manual = p.$$(".upa-upcoming-item")[2];
+  assert.equal(buttons[3].disabled, true);
+  assert.match(buttons[3].parentElement.title, /publish_at is not set/);
+  const manual = p.$$(".upa-upcoming-item")[4];
   assert.match(manual.textContent, /Wed, 14 Oct 2026 · evening, by hand \(Asia\/Jerusalem\)/);
   assert.match(manual.querySelector(".upa-chip").textContent, /manual · approved db381938/);
   assert.ok(manual.querySelector(".upa-chip").classList.contains("upa-ok"));
   assert.equal(manual.querySelector(".upa-approve, .upa-unapprove"), null);
   assert.doesNotMatch(manual.textContent, /Unscheduled|publish_at is not set|already approved with this hash/);
+  const [small, legacy, fresh, draft] = p.$$(".upa-upcoming-item");
+  const state = (row, name) => [...row.querySelectorAll(".upa-job-icons .upa-pi")]
+    .find((icon) => icon.title.startsWith(name + ":"));
+  assert.ok(state(small, "youtube").classList.contains("upa-pi-selected"));
+  assert.ok(state(small, "telegram").classList.contains("upa-pi-selected"));
+  assert.ok(state(small, "instagram").classList.contains("upa-pi-not_selected"));
+  assert.ok(state(legacy, "tiktok").classList.contains("upa-pi-manual"));
+  for (const name of ["youtube", "instagram", "threads", "x", "facebook", "telegram"])
+    assert.ok(state(legacy, name).classList.contains("upa-pi-selected"), name);
+  assert.ok(state(fresh, "tiktok").classList.contains("upa-pi-selected"));
+  assert.ok(state(draft, "tiktok").classList.contains("upa-pi-not_selected"));
+  assert.ok(state(manual, "youtube").classList.contains("upa-pi-manual"));
   await p.click(p.$(".upa-upcoming-item summary"));
   assert.match(p.container.textContent, /Telegram line/);
   await p.unmount();
@@ -262,16 +281,24 @@ test("scheduled list: Jerusalem time, relative, icon states, expand, recent resu
   assert.match(up.textContent, /holyshifted/);
   assert.match(up.textContent, /HS-2026-030/);
   const icons = [...up.querySelectorAll(".upa-pi")];
+  const order = ["youtube", "instagram", "threads", "x", "facebook", "telegram", "tiktok",
+    "linkedin", "pinterest", "bluesky", "reddit"];
+  const names = (row) => [...row.querySelectorAll(".upa-job-icons .upa-pi")]
+    .map((i) => i.getAttribute("title").split(":")[0]);
+  assert.deepEqual(names(up), order);
+  for (const item of p.$$(".upa-upcoming-item")) assert.deepEqual(names(item), order);
   assert.deepEqual(icons.map((i) => i.className.split(" ")[1]),
-    ["upa-pi-selected", "upa-pi-selected", "upa-pi-not_selected", "upa-pi-manual"]);
-  assert.match(icons[2].getAttribute("title"), /linkedin: not selected/);
-  assert.match(icons[3].getAttribute("title"), /manual/);
+    order.map((name) => ({ youtube: "selected", instagram: "selected", linkedin: "not_selected", tiktok: "manual" })[name] || "not_selected")
+      .map((state) => "upa-pi-" + state));
+  assert.match(icons[7].getAttribute("title"), /linkedin: not selected/);
+  assert.match(icons[6].getAttribute("title"), /by hand/);
   assert.ok(icons[0].querySelector("svg path"), "youtube should render its vendored SVG");
   assert.equal(up.querySelector("a.upa-job-link").getAttribute("href"), "https://app.upload-post.com/calendar");
   assert.equal(p.$(".upa-job-details"), null);
   await p.click(up);
   const details = p.$(".upa-job-details");
   assert.ok(details, "row did not expand");
+  assert.deepEqual(names(details), order);
   assert.match(details.textContent, /YT description/);
   assert.match(details.textContent, /IG caption/);
   assert.equal(details.querySelector("img").getAttribute("src"), "https://c/1.jpg");
