@@ -1,4 +1,4 @@
-"""Dashboard approval gate for HolyShifted packages."""
+"""Dashboard approval gate for publishing packages."""
 from __future__ import annotations
 
 import fcntl
@@ -30,14 +30,20 @@ OWNERS = AUTOMATION / 'f/publishing/manual_owners.json'
 DB_PATH = Path.home() / 'dev/services/_scripts/upload-post-analytics/data/upload_post_analytics.db'
 ALERT_LIB = AUTOMATION / 'host/lib'
 SECRET = secrets.token_bytes(32)
-VIDEO_ID = re.compile(r'HS-\d{4}-\d{3}\Z')
+VIDEO_ID = re.compile(r'(HS|GJ)-\d{4}-\d{3}\Z')
+
+
+def content_root(video_id):
+    match = VIDEO_ID.fullmatch(video_id)
+    if not match:
+        raise HTTPException(404, 'unknown video')
+    return CONTENT if match[1] == 'HS' else CONTENT.parent.parent / 'grandma-june/content'
 
 
 def package_path(video_id):
-    if not VIDEO_ID.fullmatch(video_id):
-        raise HTTPException(404, 'unknown video')
-    path = CONTENT / video_id / 'package.json'
-    if not path.is_file() or path.is_symlink() or path.parent.is_symlink() or not path.resolve().is_relative_to(CONTENT.resolve()):
+    content = content_root(video_id)
+    path = content / video_id / 'package.json'
+    if not path.is_file() or path.is_symlink() or path.parent.is_symlink() or not path.resolve().is_relative_to(content.resolve()):
         raise HTTPException(404, 'unknown video')
     return path
 
@@ -188,7 +194,8 @@ def upcoming(response: Response):
     response.set_cookie('upa_csrf', token, httponly=True, samesite='strict', path='/api/plugins/upload-post-analytics')
     items = []
     published = _published_ids()
-    for path in sorted(CONTENT.glob('HS-????-???/package.json')):
+    for path in sorted(p for content in (CONTENT, CONTENT.parent.parent / 'grandma-june/content')
+                       for p in content.glob('??-????-???/package.json')):
         if path.is_symlink() or path.parent.is_symlink():
             continue
         try:
@@ -230,7 +237,8 @@ def _run(*args, cwd=None):
 
 
 def _note(video_id):
-    matches = list((VAULT / 'areas/holyshifted/content').glob(video_id + '-*.md'))
+    brand = 'holyshifted' if video_id.startswith('HS-') else 'grandma-june'
+    matches = list((VAULT / 'areas' / brand / 'content').glob(video_id + '-*.md'))
     if len(matches) != 1:
         raise RuntimeError(f'expected one vault note for {video_id}, found {len(matches)}')
     return matches[0]

@@ -18,7 +18,7 @@ from validate_package import canonical_sha256
 
 @pytest.fixture
 def site(tmp_path, monkeypatch):
-    content = tmp_path / 'content'
+    content = tmp_path / 'holyshifted/content'
     video = content / 'HS-2026-999'
     video.mkdir(parents=True)
     (video / 'movie.mp4').write_bytes(b'media')
@@ -83,6 +83,21 @@ def test_per_platform_manual_route_from_package(site):
     package['manual_steps'] = []
     path.write_text(json.dumps(package))
     assert client.get(url).json()['videos'][0]['manual_platforms'] == []
+
+
+def test_june_preview_icon_and_cover(site):
+    client, package, _, _ = site
+    video = api.CONTENT.parent.parent / 'grandma-june/content/GJ-2026-999'
+    video.mkdir(parents=True)
+    (video / 'movie.mp4').write_bytes(b'media')
+    (video / 'cover.jpg').write_bytes(b'cover')
+    data = {**package, 'video_id': video.name, 'brand': 'grandma-june',
+            'platforms': {**package['platforms'], 'tiktok': {'caption': 'June Short'}}}
+    (video / 'package.json').write_text(json.dumps(data))
+    response = client.get('/api/plugins/upload-post-analytics/upcoming').json()
+    june = next(row for row in response['videos'] if row['id'] == video.name)
+    assert 'tiktok' in june['platforms'] and 'tiktok' not in june['manual_platforms']
+    assert client.get('/api/plugins/upload-post-analytics/cover/' + video.name).status_code == 200
 
 
 def test_grey_reasons_and_dispatched(site):
