@@ -7,8 +7,10 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,6 +27,7 @@ PYTHON = AUTOMATION / '.venv/bin/python'
 VALIDATOR = AUTOMATION / 'schemas/validate_package.py'
 RENDERER = AUTOMATION / 'schemas/render_package.py'
 OWNERS = AUTOMATION / 'f/publishing/manual_owners.json'
+DB_PATH = Path.home() / 'dev/services/_scripts/upload-post-analytics/data/upload_post_analytics.db'
 ALERT_LIB = AUTOMATION / 'host/lib'
 SECRET = secrets.token_bytes(32)
 VIDEO_ID = re.compile(r'HS-\d{4}-\d{3}\Z')
@@ -87,20 +90,18 @@ def assess(path, now=None):
     current = bool(digest and approval.get('package_sha256') == digest)
     changed = bool(approval and not current)
     reasons = [r for r in check['errors'] if not (changed and r.startswith('approval hash mismatch:'))]
+    owner = json.loads(OWNERS.read_text(encoding='utf-8')).get(path.parent.name)
+    planned = owner.get('planned') if isinstance(owner, dict) else None
     release = _release(data)
-    if not release:
-        reasons.append('publish_at is not set or invalid')
-    elif release < now + timedelta(hours=3):
-        reasons.append('publish_at is less than 3 hours away; dispatcher window would be missed')
-    owners = json.loads(OWNERS.read_text(encoding='utf-8'))
-    if owners.get(path.parent.name):
-        reasons.append('manual owner: ' + str(owners[path.parent.name]))
+    if not owner:
+        if not release:
+            reasons.append('publish_at is not set or invalid')
+        elif release < now + timedelta(hours=3):
+            reasons.append('publish_at is less than 3 hours away; dispatcher window would be missed')
     state = _state(path.parent.name)
     has_state = _has_state(path.parent.name)
     if has_state:
         reasons.append('publish state exists; approval is locked after dispatch')
-    if current:
-        reasons.append('already approved with this hash')
     files = data.get('files') or {}
     for key in ('video', 'thumbnail'):
         name = files.get(key)
@@ -109,15 +110,18 @@ def assess(path, now=None):
             reason = f'{key} file missing or outside package directory'
             if not any(reason in r or f'{key}=' in r for r in reasons):
                 reasons.append(reason)
-    status = ('manual owner' if owners.get(path.parent.name) else
+    status = ('manual · approved ' + digest[:8] if owner and current and digest else
+              'manual · approval invalid' if owner and changed else
+              'manual · pending' if owner else
               'published' if state.get('live_urls') or (release and release <= now) else
               'dispatched' if has_state else
               'approval invalid (package changed)' if changed else
               'approved sha ' + digest[:12] if current else
               'ready to approve' if not reasons else 'draft')
     return {'data': data, 'digest': digest, 'release': release, 'approval': approval,
-            'status': status, 'reasons': reasons, 'can_approve': not reasons,
-            'can_unapprove': bool(approval) and not has_state}
+            'planned': planned, 'manual': bool(owner), 'status': status, 'reasons': reasons,
+            'can_approve': not owner and not current and not reasons,
+            'can_unapprove': not owner and bool(approval) and not has_state}
 
 
 def _preview(data):
@@ -160,22 +164,35 @@ def _check_request(request):
         raise HTTPException(403, 'same-origin CSRF token required')
 
 
+def _published_ids():
+    if not DB_PATH.exists():
+        return set()
+    with closing(sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True, timeout=5)) as db:
+        return {row[0] for row in db.execute(
+            "SELECT DISTINCT content_id FROM posts WHERE content_id IS NOT NULL AND published_at <= ? "
+            "AND gone_at IS NULL AND duplicate_of IS NULL "
+            "AND (platform != 'youtube' OR source IN ('media', 'vault'))",
+            (int(datetime.now(timezone.utc).timestamp()),))}
+
+
 @router.get('/upcoming')
 def upcoming(response: Response):
     token = _token()
     response.set_cookie('upa_csrf', token, httponly=True, samesite='strict', path='/api/plugins/upload-post-analytics')
     items = []
+    published = _published_ids()
     for path in sorted(CONTENT.glob('HS-????-???/package.json')):
         if path.is_symlink() or path.parent.is_symlink():
             continue
         try:
             item = assess(path)
             release = item['release']
-            if item['status'] == 'published' or (release and release <= datetime.now(timezone.utc)) or _state(path.parent.name).get('live_urls'):
+            if path.parent.name in published or item['status'] == 'published' or (release and release <= datetime.now(timezone.utc)) or _state(path.parent.name).get('live_urls'):
                 continue
             data = item['data']
             items.append({'id': path.parent.name, 'title': (data.get('platforms') or {}).get('youtube', {}).get('title'),
-                          'publish_at': release.isoformat() if release else None,
+                          'publish_at': release.isoformat() if release else None, 'planned': item['planned'],
+                          'manual': item['manual'],
                           'platforms': list((data.get('platforms') or {}).keys()),
                           'status': item['status'], 'sha256': item['digest'], 'reasons': item['reasons'],
                           'can_approve': item['can_approve'], 'can_unapprove': item['can_unapprove'],
@@ -243,6 +260,8 @@ async def approval(video_id: str, request: Request):
         with (STATE / (video_id + '.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             item = assess(path)
+            if item['manual']:
+                raise HTTPException(409, 'manual owner; dashboard approval is unavailable')
             digest = item['digest']
             if digest is None or not hmac.compare_digest(digest, body['sha256']):
                 raise HTTPException(409, 'package hash changed; refresh before approving')

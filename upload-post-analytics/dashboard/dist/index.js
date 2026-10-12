@@ -581,14 +581,16 @@
         return h("div", { key: v.id, className: "upa-upcoming-item" },
           h("div", { className: "upa-upcoming-head" },
             h("b", null, v.id + " · " + (v.title || "Untitled")),
-            h("span", null, v.publish_at ? fmtSlot(Date.parse(v.publish_at) / 1000) : "Unscheduled"),
-            h("span", { className: "upa-chip " + (v.status === "ready to approve" || v.status.startsWith("approved") ? "upa-ok" :
+            h("span", null, v.publish_at ? fmtSlot(Date.parse(v.publish_at) / 1000) : v.planned ?
+              new Intl.DateTimeFormat("en-GB", { timeZone: LOCAL_TZ, weekday: "short", day: "numeric", month: "short", year: "numeric" })
+                .format(new Date(v.planned.date + "T12:00:00Z")) + " · " + v.planned.note + " (" + LOCAL_TZ + ")" : "Unscheduled"),
+            h("span", { className: "upa-chip " + (v.status === "ready to approve" || v.status.startsWith("approved") || v.status.startsWith("manual · approved") ? "upa-ok" :
               v.status.startsWith("approval invalid") ? "upa-bad" : "") }, v.status),
             h("span", { className: "upa-muted" }, v.platforms.join(" · ")),
-            h("span", { className: "upa-action-tip", title: v.reasons.join("; ") || "Ready to approve" },
+            !v.manual && h("span", { className: "upa-action-tip", title: v.reasons.join("; ") || "Ready to approve" },
               h("button", { type: "button", className: "upa-approve", disabled: !v.can_approve || !!busy,
                 onClick: function () { change(v, "approve"); } }, busy === v.id ? "Working…" : "Approve")),
-            v.can_unapprove && h("button", { type: "button", className: "upa-unapprove", disabled: !!busy,
+            !v.manual && v.can_unapprove && h("button", { type: "button", className: "upa-unapprove", disabled: !!busy,
               onClick: function () { change(v, "unapprove"); } }, "Unapprove")),
           v.reasons.length > 0 && h("div", { className: "upa-muted" }, v.reasons.join(" · ")),
           h("details", null, h("summary", null, "Preview"),

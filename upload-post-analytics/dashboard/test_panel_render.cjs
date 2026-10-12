@@ -54,7 +54,10 @@ const UPCOMING = { status: "ok", csrf: "test-token", videos: [{ id: "HS-2026-999
   cover: null, preview: { youtube_title: "Preview title", description: ["First line"], first_comment: "Comment",
     platform_lines: { telegram: ["Telegram line"] } } },
   { id: "HS-2026-998", title: "Draft", publish_at: null, platforms: [], status: "draft", sha256: "b".repeat(64),
-    reasons: ["publish_at is not set"], can_approve: false, can_unapprove: false, cover: null, preview: {} }] };
+    reasons: ["publish_at is not set"], can_approve: false, can_unapprove: false, cover: null, preview: {} },
+  { id: "HS-2026-032", title: "Manual", publish_at: null, planned: { date: "2026-10-14", note: "evening, by hand" },
+    manual: true, platforms: ["youtube"], status: "manual · approved db381938", sha256: "db381938" + "c".repeat(56),
+    reasons: [], can_approve: false, can_unapprove: false, cover: null, preview: {} }] };
 
 // Current backend: daily points are "YYYY-MM-DD" strings and the range is echoed back.
 function seriesNew(q) {
@@ -165,6 +168,12 @@ test("upcoming approval readiness and preview render", async () => {
   assert.equal(buttons[0].disabled, false);
   assert.equal(buttons[1].disabled, true);
   assert.match(buttons[1].parentElement.title, /publish_at is not set/);
+  const manual = p.$$(".upa-upcoming-item")[2];
+  assert.match(manual.textContent, /Wed, 14 Oct 2026 · evening, by hand \(Asia\/Jerusalem\)/);
+  assert.match(manual.querySelector(".upa-chip").textContent, /manual · approved db381938/);
+  assert.ok(manual.querySelector(".upa-chip").classList.contains("upa-ok"));
+  assert.equal(manual.querySelector(".upa-approve, .upa-unapprove"), null);
+  assert.doesNotMatch(manual.textContent, /Unscheduled|publish_at is not set|already approved with this hash/);
   await p.click(p.$(".upa-upcoming-item summary"));
   assert.match(p.container.textContent, /Telegram line/);
   await p.unmount();

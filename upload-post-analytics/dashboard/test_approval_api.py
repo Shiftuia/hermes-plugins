@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent))
 import approval_api as api
+_published_ids_from_db = api._published_ids
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'dev/automation/schemas'))
 from validate_package import canonical_sha256
@@ -31,6 +33,7 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(api, 'CONTENT', content)
     monkeypatch.setattr(api, 'STATE', tmp_path / 'state')
     monkeypatch.setattr(api, 'OWNERS', owners)
+    monkeypatch.setattr(api, '_published_ids', lambda: set())
     def check(path, approval=False):
         data = json.loads(path.read_text())
         sha = canonical_sha256(data)
@@ -60,6 +63,7 @@ def test_ready_draft_approved_changed(site):
     path.write_text(json.dumps(package))
     assert api.assess(path)['status'].startswith('approved sha')
     assert not api.assess(path)['can_approve']
+    assert 'already approved with this hash' not in api.assess(path)['reasons']
     package['platforms']['youtube']['title'] = 'Changed'
     path.write_text(json.dumps(package))
     item = api.assess(path)
@@ -73,7 +77,7 @@ def test_grey_reasons_and_dispatched(site):
     path.write_text(json.dumps(package))
     assert '3 hours' in ' '.join(api.assess(path)['reasons'])
     owners.write_text(json.dumps({path.parent.name: 'Dima'}))
-    assert api.assess(path)['status'] == 'manual owner'
+    assert api.assess(path)['status'] == 'manual · pending'
     owners.write_text('{}')
     api.STATE.mkdir()
     (api.STATE / (path.parent.name + '.json')).write_text('{"dispatch": {"state": "launched"}}')
@@ -81,6 +85,53 @@ def test_grey_reasons_and_dispatched(site):
     assert not api.assess(path)['can_approve']
     (path.parent / 'cover.jpg').unlink()
     assert 'thumbnail' in ' '.join(api.assess(path)['reasons'])
+
+
+def test_manual_approved_planned_and_no_mutation(site):
+    client, package, path, owners = site
+    owners.write_text(json.dumps({path.parent.name: {'owner': 'manual sheet',
+                                                    'planned': {'date': '2026-10-14', 'note': 'evening, by hand'}}}))
+    package['schedule']['publish_at'] = None
+    digest = canonical_sha256(package)
+    package['approval'] = {'approved_at': '2026-10-11T08:04:54Z', 'package_sha256': digest}
+    path.write_text(json.dumps(package))
+    item = api.assess(path)
+    assert item['status'] == 'manual · approved ' + digest[:8]
+    assert item['reasons'] == []
+    assert not item['can_approve'] and not item['can_unapprove']
+    listing = client.get('/api/plugins/upload-post-analytics/upcoming').json()
+    row = listing['videos'][0]
+    assert row['planned'] == {'date': '2026-10-14', 'note': 'evening, by hand'}
+    assert row['manual'] and row['status'] == item['status']
+    url = '/api/plugins/upload-post-analytics/approval/' + path.parent.name
+    headers = {'Origin': 'http://testserver', 'X-UPA-CSRF': listing['csrf']}
+    for action in ('approve', 'unapprove'):
+        assert client.post(url, json={'action': action, 'sha256': digest}, headers=headers).status_code == 409
+    assert json.loads(path.read_text()) == package
+    api.STATE.mkdir(exist_ok=True)
+    (api.STATE / (path.parent.name + '.json')).write_text('{"live_urls": {"youtube": "https://youtube.com/watch?v=1"}}')
+    assert client.get('/api/plugins/upload-post-analytics/upcoming').json()['videos'] == []
+
+
+def test_manual_leaves_upcoming_only_when_analytics_published(site, tmp_path, monkeypatch):
+    client, package, path, owners = site
+    owners.write_text(json.dumps({path.parent.name: {'owner': 'manual', 'planned': {'date': '2026-10-14', 'note': 'evening'}}}))
+    package['schedule']['publish_at'] = None
+    path.write_text(json.dumps(package))
+    database = tmp_path / 'analytics.db'
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE posts (content_id TEXT, published_at INTEGER, platform TEXT, source TEXT, gone_at INTEGER, duplicate_of INTEGER)')
+        db.execute('INSERT INTO posts VALUES (?,?,?,?,?,?)', (path.parent.name, None, 'youtube', 'media', None, None))
+    monkeypatch.setattr(api, 'DB_PATH', database)
+    monkeypatch.setattr(api, '_published_ids', _published_ids_from_db)
+    url = '/api/plugins/upload-post-analytics/upcoming'
+    assert len(client.get(url).json()['videos']) == 1
+    with sqlite3.connect(database) as db:
+        db.execute('UPDATE posts SET published_at=?', (int(datetime.now(timezone.utc).timestamp()) + 3600,))
+    assert len(client.get(url).json()['videos']) == 1
+    with sqlite3.connect(database) as db:
+        db.execute('UPDATE posts SET published_at=?', (int(datetime.now(timezone.utc).timestamp()) - 60,))
+    assert client.get(url).json()['videos'] == []
 
 
 def test_endpoint_csrf_origin_stale_manual_late_and_write(site, monkeypatch):
