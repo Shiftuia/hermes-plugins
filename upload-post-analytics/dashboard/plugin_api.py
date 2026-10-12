@@ -1,8 +1,9 @@
-"""Upload-Post analytics dashboard panel — read-only routes over the collector's SQLite.
+"""Upload-Post analytics routes and HolyShifted package approval.
 
-Mounted at /api/plugins/upload-post-analytics/. The collector
+Mounted at /api/plugins/upload-post-analytics/. The analytics collector
 (~/dev/services/_scripts/upload-post-analytics) is the only writer; this module opens the DB
-with ``mode=ro`` and never calls the Upload-Post API.
+with ``mode=ro`` and never calls the Upload-Post API. The approval routes separately write the
+content package and vault note; they do not touch the collector DB.
 
 Series kinds, so the UI can toggle cumulative vs per-interval honestly:
   - ``daily``  per-day values (channel_daily): cumulative = sum within selected range, delta = as-is.
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -33,7 +35,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter
 
+sys.path.insert(0, str(Path(__file__).parent))
+from approval_api import router as approval_router
+
 router = APIRouter()
+router.include_router(approval_router)
 
 DB_PATH = Path("~/dev/services/_scripts/upload-post-analytics/data/upload_post_analytics.db").expanduser()
 

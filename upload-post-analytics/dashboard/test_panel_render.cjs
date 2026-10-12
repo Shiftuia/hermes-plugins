@@ -48,6 +48,14 @@ const SCHEDULED = { status: "ok", now: NOW_S, collecting: true,
     platforms: [{ platform: "youtube", state: "selected", result: { status: "completed", post_url: "https://youtube.com/shorts/a", error: null } },
       { platform: "instagram", state: "selected", result: { status: "failed", post_url: null, error: "Video too long" } }] }] };
 
+const UPCOMING = { status: "ok", csrf: "test-token", videos: [{ id: "HS-2026-999", title: "Preview title",
+  publish_at: new Date(NOW + 6 * 3600000).toISOString(), platforms: ["youtube", "telegram"],
+  status: "ready to approve", sha256: "a".repeat(64), reasons: [], can_approve: true, can_unapprove: false,
+  cover: null, preview: { youtube_title: "Preview title", description: ["First line"], first_comment: "Comment",
+    platform_lines: { telegram: ["Telegram line"] } } },
+  { id: "HS-2026-998", title: "Draft", publish_at: null, platforms: [], status: "draft", sha256: "b".repeat(64),
+    reasons: ["publish_at is not set"], can_approve: false, can_unapprove: false, cover: null, preview: {} }] };
+
 // Current backend: daily points are "YYYY-MM-DD" strings and the range is echoed back.
 function seriesNew(q) {
   const lines = q.get("target") === "channel"
@@ -84,7 +92,7 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
       const u = new URL(url, "http://x");
       const route = u.pathname.replace("/api/plugins/upload-post-analytics", "");
       const body = route === "/options" ? OPTIONS : route === "/health" ? HEALTH : route === "/series" ? series(u.searchParams)
-        : route === "/scheduled" ? scheduled : null;
+        : route === "/scheduled" ? scheduled : route === "/upcoming" ? UPCOMING : null;
       return body ? Promise.resolve(JSON.parse(JSON.stringify(body))) : Promise.reject(new Error("404 " + route));
     },
     components: {
@@ -149,6 +157,18 @@ async function mount({ series = seriesNew, brokenCard = false, scheduled = SCHED
   }
   return { container, errors, $, $$, setValue, act, click, hover, alive, everyRange, unmount: () => act(() => root.unmount()) };
 }
+
+test("upcoming approval readiness and preview render", async () => {
+  const p = await mount();
+  const buttons = p.$$(".upa-approve");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].disabled, false);
+  assert.equal(buttons[1].disabled, true);
+  assert.match(buttons[1].parentElement.title, /publish_at is not set/);
+  await p.click(p.$(".upa-upcoming-item summary"));
+  assert.match(p.container.textContent, /Telegram line/);
+  await p.unmount();
+});
 
 for (const [name, series] of [["current backend", seriesNew], ["pre-range backend (not restarted)", seriesOld]]) {
   test("channel and post stay rendered across every range: " + name, async () => {

@@ -1,7 +1,7 @@
 {
   "name": "upload-post-analytics",
   "label": "Post analytics",
-  "description": "Upload-Post analytics over time: scheduled posts (platforms, local time, captions, publish result), one chart per profile, channel overall or a single post, one line per platform and metric type, plus a 24 h errors/rate-limit strip. Read-only over the upload-post-analytics collector's SQLite.",
+  "description": "Upload-Post analytics, scheduled jobs, and HolyShifted package preview and approval. Approval writes require same-origin CSRF checks, a current package hash and the publishing state gate.",
   "icon": "BarChart3",
   "version": "1.0.0",
   "tab": {

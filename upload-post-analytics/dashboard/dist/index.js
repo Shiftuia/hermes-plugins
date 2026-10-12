@@ -550,6 +550,58 @@
         body));
   }
 
+  function UpcomingSection({ q }) {
+    const [busy, setBusy] = hooks.useState(null);
+    const [error, setError] = hooks.useState(null);
+    const d = q.data;
+    async function change(video, action) {
+      if (!window.confirm((action === "approve" ? "Approve " : "Unapprove ") + video.id + "?\nSHA-256: " + video.sha256 +
+        "\nPublishes: " + (video.publish_at ? fmtSlot(Date.parse(video.publish_at) / 1000) : "not set"))) return;
+      setBusy(video.id);
+      setError(null);
+      try {
+        const res = await fetch("/api/plugins/upload-post-analytics/approval/" + encodeURIComponent(video.id), {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-UPA-CSRF": d.csrf },
+          body: JSON.stringify({ action: action, sha256: video.sha256 }),
+        });
+        if (!res.ok) {
+          const body = await res.json();
+          throw new Error(typeof body.detail === "string" ? body.detail : "HTTP " + res.status);
+        }
+        q.reload();
+      } catch (e) { setError(String(e.message || e)); }
+      finally { setBusy(null); }
+    }
+    return h(C.Card, null, h(C.CardContent, { className: "upa-card" },
+      h("h3", { className: "upa-subhead" }, "Upcoming"),
+      h("span", { className: "upa-muted" }, "Package approvals · publish times in " + LOCAL_TZ + ". Approve at least 3 hours ahead."),
+      error && h("div", { role: "alert", className: "upa-bad" }, error),
+      !d ? h("div", { className: "upa-muted" }, q.error || "Loading…") :
+      (d.videos.length ? d.videos.map(function (v) {
+        return h("div", { key: v.id, className: "upa-upcoming-item" },
+          h("div", { className: "upa-upcoming-head" },
+            h("b", null, v.id + " · " + (v.title || "Untitled")),
+            h("span", null, v.publish_at ? fmtSlot(Date.parse(v.publish_at) / 1000) : "Unscheduled"),
+            h("span", { className: "upa-chip " + (v.status === "ready to approve" || v.status.startsWith("approved") ? "upa-ok" :
+              v.status.startsWith("approval invalid") ? "upa-bad" : "") }, v.status),
+            h("span", { className: "upa-muted" }, v.platforms.join(" · ")),
+            h("span", { className: "upa-action-tip", title: v.reasons.join("; ") || "Ready to approve" },
+              h("button", { type: "button", className: "upa-approve", disabled: !v.can_approve || !!busy,
+                onClick: function () { change(v, "approve"); } }, busy === v.id ? "Working…" : "Approve")),
+            v.can_unapprove && h("button", { type: "button", className: "upa-unapprove", disabled: !!busy,
+              onClick: function () { change(v, "unapprove"); } }, "Unapprove")),
+          v.reasons.length > 0 && h("div", { className: "upa-muted" }, v.reasons.join(" · ")),
+          h("details", null, h("summary", null, "Preview"),
+            v.cover && h("img", { src: v.cover, alt: v.id + " cover", className: "upa-job-cover", loading: "lazy" }),
+            h("div", null, "YouTube: " + (v.preview.youtube_title || "—")),
+            h("div", { className: "upa-job-text" }, (v.preview.description || []).join("\n")),
+            h("div", null, "First comment: " + (v.preview.first_comment || "—")),
+            Object.entries(v.preview.platform_lines || {}).map(function (entry) {
+              return h("div", { key: entry[0] }, entry[0] + ": " + entry[1].join(" "));
+            })));
+      }) : h("div", { className: "upa-muted" }, "No unpublished packages."))));
+  }
+
   function UploadPostAnalyticsPage() {
     const opts = useQuery("/options");
     const [profile, setProfile] = hooks.useState("");
@@ -600,6 +652,7 @@
     const series = useQuery(seriesPath);
     const health = useQuery("/health" + (profile ? "?profile=" + encodeURIComponent(profile) : ""));
     const scheduled = useQuery("/scheduled");
+    const upcoming = useQuery("/upcoming");
 
     const lines = hooks.useMemo(function () {
       const d = series.data;
@@ -645,10 +698,11 @@
       h("div", { className: "upa-head" },
         h("h2", null, "Upload-Post analytics"),
         h(C.Button, { onClick: function () {
-          opts.reload(); health.reload(); scheduled.reload();
+          opts.reload(); health.reload(); scheduled.reload(); upcoming.reload();
           if (rangeKey === "custom") series.reload(); else setNowMs(Date.now());
         }, disabled: series.loading },
           series.loading ? "Loading…" : "Refresh")),
+      h(UpcomingSection, { q: upcoming }),
       h(ScheduledSection, { q: scheduled }),
       h(HealthStrip, { q: health }),
       h(C.Card, null,
