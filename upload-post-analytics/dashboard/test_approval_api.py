@@ -122,7 +122,7 @@ def test_june_preview_icon_and_cover(site):
 @pytest.mark.parametrize('minutes', [120, 1, -60])
 def test_approval_time_does_not_block_or_publish(site, monkeypatch, minutes):
     client, package, path, _ = site
-    package['schedule']['publish_at'] = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    package['schedule']['publish_at'] = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).strftime('%Y-%m-%dT%H:%M:%SZ')
     path.write_text(json.dumps(package))
     before = path.read_bytes()
     item = api.assess(path)
