@@ -119,11 +119,67 @@ def test_june_preview_icon_and_cover(site):
     assert client.get('/api/plugins/upload-post-analytics/cover/' + video.name).status_code == 200
 
 
+@pytest.mark.parametrize('minutes', [120, 1, -60])
+def test_approval_time_does_not_block_or_publish(site, monkeypatch, minutes):
+    client, package, path, _ = site
+    package['schedule']['publish_at'] = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+    path.write_text(json.dumps(package))
+    before = path.read_bytes()
+    item = api.assess(path)
+    assert item['can_approve'] and item['reasons'] == []
+    assert path.read_bytes() == before
+    listing = client.get('/api/plugins/upload-post-analytics/upcoming').json()
+    row = listing['videos'][0]
+    assert row['can_approve'] and row['status'] != 'published'
+    if minutes < 0:
+        assert row['status'] == 'missed release · approval required'
+    headers = {'Origin': 'http://testserver', 'X-UPA-CSRF': listing['csrf']}
+    url = '/api/plugins/upload-post-analytics/approval/' + path.parent.name
+    stale = {'action': 'approve', 'sha256': '0' * 64}
+    assert client.post(url, json=stale, headers=headers).status_code == 409
+    (path.parent / 'cover.jpg').unlink()
+    assert not api.assess(path)['can_approve']
+    payload = {'action': 'approve', 'sha256': row['sha256']}
+    assert client.post(url, json=payload, headers=headers).status_code == 409
+    (path.parent / 'cover.jpg').write_bytes(b'cover')
+    calls = []
+    monkeypatch.setattr(api, '_note', lambda _id: path.parent / 'note.md')
+    monkeypatch.setattr(api, '_run', lambda *args, **kwargs: calls.append(args) or '')
+    audits = []
+    monkeypatch.setattr(api, '_audit', audits.append)
+    assert client.post(url, json=payload, headers=headers).status_code == 200
+    approved = json.loads(path.read_text())
+    assert approved['schedule'] == package['schedule']
+    assert approved['platforms'] == package['platforms']
+    assert approved['approval']['package_sha256'] == row['sha256']
+    assert approved['approval']['approved_via'] == 'dashboard'
+    assert datetime.fromisoformat(approved['approval']['approved_at'].replace('Z', '+00:00')) <= datetime.now(timezone.utc)
+    assert any(call[:2] == ('git', 'commit') for call in calls)
+    assert any(call[:2] == ('git', 'push') for call in calls)
+    assert len(audits) == 1
+    assert not api._has_state(path.parent.name)
+    if minutes < 0:
+        row = client.get('/api/plugins/upload-post-analytics/upcoming').json()['videos'][0]
+        assert row['status'].startswith('missed release · approved')
+        assert not row['can_approve']
+
+
+@pytest.mark.parametrize('release', [None, 'not-a-date'])
+def test_invalid_schedule_still_blocks_approval(site, release):
+    _, package, path, _ = site
+    package['schedule']['publish_at'] = release
+    path.write_text(json.dumps(package))
+    item = api.assess(path)
+    assert not item['can_approve']
+    assert 'publish_at is not set or invalid' in item['reasons']
+
+
 def test_grey_reasons_and_dispatched(site):
     _, package, path, owners = site
     package['schedule']['publish_at'] = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
     path.write_text(json.dumps(package))
-    assert '3 hours' in ' '.join(api.assess(path)['reasons'])
+    assert api.assess(path)['can_approve']
+    assert api.assess(path)['reasons'] == []
     owners.write_text(json.dumps({path.parent.name: 'Dima'}))
     assert api.assess(path)['status'] == 'manual · pending'
     owners.write_text('{}')

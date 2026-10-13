@@ -640,7 +640,7 @@
     }
     return h(C.Card, null, h(C.CardContent, { className: "upa-card" },
       h("h3", { className: "upa-subhead" }, "Upcoming"),
-      h("span", { className: "upa-muted" }, "Package approvals · publish times in " + LOCAL_TZ + ". Approve at least 3 hours ahead. Colour = selected · grey = not selected · dashed = published by hand."),
+      h("span", { className: "upa-muted" }, "Package approvals · publish times in " + LOCAL_TZ + ". Approve at any time; approval does not override publishing readiness. Colour = selected · grey = not selected · dashed = published by hand."),
       error && h("div", { role: "alert", className: "upa-bad" }, error),
       !d ? h("div", { className: "upa-muted" }, q.error || "Loading…") :
       (d.videos.length ? d.videos.map(function (v) {

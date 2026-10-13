@@ -261,6 +261,8 @@ test("upcoming approval readiness and preview render", async () => {
   const p = await mount();
   const buttons = p.$$(".upa-approve");
   assert.equal(buttons.length, 4);
+  assert.doesNotMatch(p.container.textContent, /Approve at least 3 hours ahead/);
+  assert.match(p.container.textContent, /Approve at any time/);
   assert.equal(buttons[0].disabled, false);
   assert.equal(buttons[3].disabled, true);
   assert.match(buttons[3].parentElement.title, /publish_at is not set/);

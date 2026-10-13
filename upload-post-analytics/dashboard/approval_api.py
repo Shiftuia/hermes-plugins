@@ -11,7 +11,7 @@ import sqlite3
 import subprocess
 import sys
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -99,11 +99,8 @@ def assess(path, now=None):
     owner = json.loads(OWNERS.read_text(encoding='utf-8')).get(path.parent.name)
     planned = owner.get('planned') if isinstance(owner, dict) else None
     release = _release(data)
-    if not owner:
-        if not release:
-            reasons.append('publish_at is not set or invalid')
-        elif release < now + timedelta(hours=3):
-            reasons.append('publish_at is less than 3 hours away; dispatcher window would be missed')
+    if not owner and not release:
+        reasons.append('publish_at is not set or invalid')
     state = _state(path.parent.name)
     has_state = _has_state(path.parent.name)
     if has_state:
@@ -119,8 +116,10 @@ def assess(path, now=None):
     status = ('manual · approved ' + digest[:8] if owner and current and digest else
               'manual · approval invalid' if owner and changed else
               'manual · pending' if owner else
-              'published' if state.get('live_urls') or (release and release <= now) else
+              'published' if state.get('live_urls') else
               'dispatched' if has_state else
+              'missed release · approved ' + digest[:12] if release and release <= now and current else
+              'missed release · approval required' if release and release <= now and not reasons else
               'approval invalid (package changed)' if changed else
               'approved sha ' + digest[:12] if current else
               'ready to approve' if not reasons else 'draft')
@@ -203,7 +202,7 @@ def upcoming(response: Response):
         try:
             item = assess(path)
             release = item['release']
-            if path.parent.name in published or item['status'] == 'published' or (release and release <= datetime.now(timezone.utc)) or _state(path.parent.name).get('live_urls'):
+            if path.parent.name in published or item['status'] == 'published' or _state(path.parent.name).get('live_urls'):
                 continue
             data = item['data']
             items.append({'id': path.parent.name, 'title': (data.get('platforms') or {}).get('youtube', {}).get('title'),
