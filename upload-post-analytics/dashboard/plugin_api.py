@@ -424,9 +424,11 @@ def get_health(profile: Optional[str] = None) -> dict[str, Any]:
         error_since = now - 48 * 3600
         err_filter = "AND (profile=? OR profile IS NULL)" if profile else ""
         err_args = (error_since, now, profile) if profile else (error_since, now)
+        err_cols = {r[1] for r in db.execute("PRAGMA table_info(errors)")}
+        resolved_filter = "AND resolved_at IS NULL" if "resolved_at" in err_cols else ""
         errors = db.execute(
             f"SELECT ts, endpoint, profile, platform, status, error_code, message FROM errors"
-            f" WHERE ts BETWEEN ? AND ? {err_filter} ORDER BY ts DESC", err_args).fetchall()
+            f" WHERE ts BETWEEN ? AND ? {resolved_filter} {err_filter} ORDER BY ts DESC", err_args).fetchall()
     return {
         "status": "ok",
         "window_hours": HEALTH_WINDOW_SECONDS // 3600,
