@@ -30,7 +30,10 @@ OWNERS = AUTOMATION / 'f/publishing/manual_owners.json'
 DB_PATH = Path.home() / 'dev/services/_scripts/upload-post-analytics/data/upload_post_analytics.db'
 ALERT_LIB = AUTOMATION / 'host/lib'
 SECRET = secrets.token_bytes(32)
+sys.path.insert(0, str(ALERT_LIB))
+from approval_writer import current_writer  # noqa: E402
 VIDEO_ID = re.compile(r'(HS|GJ)-\d{4}-\d{3}\Z')
+MOVED = 'approval moved to HQ (hq.shiftuia.com/upload-post)'
 
 
 def content_root(video_id):
@@ -194,6 +197,7 @@ def upcoming(response: Response):
     token = _token()
     response.set_cookie('upa_csrf', token, httponly=True, samesite='strict', path='/api/plugins/upload-post-analytics')
     items = []
+    writes = current_writer() == 'plugin'
     published = _published_ids()
     for path in sorted(p for content in (CONTENT, CONTENT.parent.parent / 'grandma-june/content')
                        for p in content.glob('??-????-???/package.json')):
@@ -211,8 +215,10 @@ def upcoming(response: Response):
                           'platforms': list((data.get('platforms') or {}).keys()),
                           'manual_platforms': (list((data.get('platforms') or {}).keys()) if item['manual']
                                                else _manual_platforms(data)),
-                          'status': item['status'], 'sha256': item['digest'], 'reasons': item['reasons'],
-                          'can_approve': item['can_approve'], 'can_unapprove': item['can_unapprove'],
+                          'status': item['status'], 'sha256': item['digest'],
+                          'reasons': item['reasons'] if writes else item['reasons'] + [MOVED],
+                          'can_approve': writes and item['can_approve'],
+                          'can_unapprove': writes and item['can_unapprove'],
                           'preview': _preview(data), 'cover': f'/api/plugins/upload-post-analytics/cover/{path.parent.name}'})
         except (OSError, ValueError, KeyError, TypeError) as exc:
             items.append({'id': path.parent.name, 'status': 'draft', 'reasons': [str(exc)], 'can_approve': False,
@@ -277,6 +283,8 @@ async def approval(video_id: str, request: Request):
     try:
         with (STATE / (video_id + '.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            if current_writer() != 'plugin':
+                raise HTTPException(409, MOVED)
             item = assess(path)
             if item['manual']:
                 raise HTTPException(409, 'manual owner; dashboard approval is unavailable')

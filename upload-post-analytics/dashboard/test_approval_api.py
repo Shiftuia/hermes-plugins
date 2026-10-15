@@ -34,6 +34,7 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(api, 'STATE', tmp_path / 'state')
     monkeypatch.setattr(api, 'OWNERS', owners)
     monkeypatch.setattr(api, '_published_ids', lambda: set())
+    monkeypatch.setattr(api, 'current_writer', lambda: 'plugin')
     def check(path, approval=False):
         data = json.loads(path.read_text())
         sha = canonical_sha256(data)
@@ -279,3 +280,29 @@ def test_endpoint_csrf_origin_stale_manual_late_and_write(site, monkeypatch):
     assert client.post(url, json=payload, headers=headers).status_code == 200
     assert json.loads(path.read_text())['approval'] is None
     assert client.post(url, json=payload, headers=headers).json()['unchanged']
+
+
+@pytest.mark.parametrize('writer', ['hq', None])
+def test_switch_away_from_plugin_blocks_writes_and_hides_buttons(site, monkeypatch, writer):
+    client, package, path, _ = site
+    monkeypatch.setattr(api, 'current_writer', lambda: writer)
+    listing = client.get('/api/plugins/upload-post-analytics/upcoming').json()
+    row = listing['videos'][0]
+    assert not row['can_approve'] and not row['can_unapprove'] and api.MOVED in row['reasons']
+    calls = []
+    monkeypatch.setattr(api, '_run', lambda *args, **kwargs: calls.append(args) or '')
+    url = '/api/plugins/upload-post-analytics/approval/' + path.parent.name
+    headers = {'Origin': 'http://testserver', 'X-UPA-CSRF': listing['csrf']}
+    for action in ('approve', 'unapprove'):
+        r = client.post(url, json={'action': action, 'sha256': row['sha256']}, headers=headers)
+        assert r.status_code == 409 and r.json()['detail'] == api.MOVED
+    assert json.loads(path.read_text()) == package and calls == []
+
+
+def test_writer_file_parsing(tmp_path):
+    from approval_writer import current_writer
+    f = tmp_path / 'writer'
+    assert current_writer(f) == 'plugin'  # no file: the pre-HQ state
+    for text, expected in (('hq\n', 'hq'), ('plugin', 'plugin'), ('HQ', None), ('', None), ('both', None)):
+        f.write_text(text)
+        assert current_writer(f) == expected
