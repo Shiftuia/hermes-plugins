@@ -35,6 +35,9 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(api, 'OWNERS', owners)
     monkeypatch.setattr(api, '_published_ids', lambda: set())
     monkeypatch.setattr(api, 'current_writer', lambda: 'plugin')
+    # shared.publishing_ledger lands on main via the windmill-recovery/2 deploy; namespace packages
+    # let this worktree contribute it alongside main's shared/ until the merge lands.
+    monkeypatch.syspath_prepend(str(Path.home() / 'dev/automation-wt/wr2'))
     def check(path, approval=False):
         data = json.loads(path.read_text())
         sha = canonical_sha256(data)
@@ -272,14 +275,21 @@ def test_endpoint_csrf_origin_stale_manual_late_and_write(site, monkeypatch):
     approved = json.loads(path.read_text())['approval']
     assert approved['approved_via'] == 'dashboard' and approved['package_sha256'] == fresh
     assert client.post(url, json=payload, headers=headers).json()['unchanged']
+    ledger_state = json.loads((api.STATE / (path.parent.name + '.json')).read_text())
+    fact = ledger_state['_recovery']['facts'][-1]
+    assert (fact['principal'], fact['assurance'], fact['channel'], fact['status']) == (
+        'dashboard-session', 'csrf-session', 'plugin', 'approved')
+    assert fact['principal'] != 'Dima'
     payload['action'] = 'unapprove'
-    api.STATE.mkdir(exist_ok=True)
-    (api.STATE / (path.parent.name + '.json')).write_text('{"dispatch": {"state": "launched"}}')
+    dashboard_state = api.STATE / (path.parent.name + '.json')
+    dashboard_state.write_text(json.dumps({**ledger_state, 'dispatch': {'state': 'launched'}}))
     assert client.post(url, json=payload, headers=headers).status_code == 409
-    (api.STATE / (path.parent.name + '.json')).unlink()
+    dashboard_state.write_text(json.dumps(ledger_state))
     assert client.post(url, json=payload, headers=headers).status_code == 200
     assert json.loads(path.read_text())['approval'] is None
     assert client.post(url, json=payload, headers=headers).json()['unchanged']
+    revoked = json.loads(dashboard_state.read_text())['_recovery']['facts'][-1]
+    assert revoked['status'] == 'revoked' and revoked['principal'] == 'dashboard-session'
 
 
 @pytest.mark.parametrize('writer', ['hq', None])

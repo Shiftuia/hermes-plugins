@@ -71,7 +71,12 @@ def _state(video_id):
 
 
 def _has_state(video_id):
-    return (STATE / (video_id + '.json')).exists()
+    sys.path.insert(0, str(AUTOMATION))
+    from shared.publishing_ledger import has_publication_state
+    path = STATE / (video_id + '.json')
+    if not path.exists():
+        return False
+    return has_publication_state(json.loads(path.read_text()))
 
 
 def _package(path):
@@ -259,7 +264,15 @@ def _audit(message):
         raise RuntimeError('Discord audit delivery failed; approval is saved, inspect alerts before retry')
 
 
+def _record_approval_fact(video_id, action, digest, approval_key):
+    sys.path.insert(0, str(AUTOMATION))
+    from shared.publishing_ledger import approval_fact_unlocked
+    # Honest identity: CSRF/same-origin session, never a verified human — see windmill-recovery card 2.
+    approval_fact_unlocked(STATE, video_id, action, digest, approval_key, 'dashboard-session', 'plugin', 'csrf-session')
+
+
 def _finish(video_id, action, digest, release, approval_key):
+    _record_approval_fact(video_id, action, digest, approval_key)
     _run('git', 'push', cwd=VAULT)
     marker = STATE / (video_id + '.dashboard-audit.json')
     event = {'action': action, 'sha256': digest, 'approval_key': approval_key}
