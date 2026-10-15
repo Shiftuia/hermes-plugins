@@ -103,8 +103,9 @@ def test_only_public_past_posts_are_visible_in_options_and_series(db):
     con.commit()
     con.close()
     keys = {p['key'] for p in plugin_api.get_options()['profiles'][0]['posts']}
-    assert keys == {'p:3', 'p:5'}
-    assert plugin_api.get_series(profile='brand', target='c:HS-001')['lines'] == []
+    # Gone post (id=1, c:HS-001) keeps its metric history visible, while future (id=2, id=9) and private (id=4) stay hidden
+    assert keys == {'c:HS-001', 'p:3', 'p:5'}
+    assert len(plugin_api.get_series(profile='brand', target='c:HS-001')['lines']) == 1
     assert plugin_api.get_series(profile='brand', target='p:4')['lines'] == []
     assert plugin_api.get_series(profile='brand', target='p:9')['lines'] == []
 

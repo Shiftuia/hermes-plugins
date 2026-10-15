@@ -77,9 +77,7 @@ def _not_duplicate(db) -> str:
 
 
 def _visible_posts(db) -> str:
-    cols = {r[1] for r in db.execute("PRAGMA table_info(posts)")}
-    gone = "p.gone_at IS NULL" if "gone_at" in cols else "1"
-    return (f"{_not_duplicate(db)} AND {gone} AND p.published_at IS NOT NULL"
+    return (f"{_not_duplicate(db)} AND p.published_at IS NOT NULL"
             " AND p.published_at <= ? AND (p.platform != 'youtube' OR p.source IN ('media','vault'))")
 
 
