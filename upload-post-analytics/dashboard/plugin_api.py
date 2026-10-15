@@ -83,11 +83,27 @@ def _visible_posts(db) -> str:
             " AND p.published_at <= ? AND (p.platform != 'youtube' OR p.source IN ('media','vault'))")
 
 
+def _external_id_col(db) -> str:
+    """A DB from before the collector added ``external_id`` has none to select."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(posts)")}
+    return "p.external_id" if "external_id" in cols else "NULL"
+
+
+def _video_prefix(external_id: Optional[str]) -> Optional[str]:
+    """external_id is '<video_id>:<platform>:<hash>' set by the publishing pipeline; the video_id
+    prefix is shared across platforms for one upload, unlike the full string."""
+    if not external_id:
+        return None
+    return external_id.split(":", 1)[0] or None
+
+
 def _group_posts(rows) -> list[list]:
-    """One group per logical post: shared vault content_id, else shared Upload-Post request_id
-    (same multi-platform upload), else a lone post. No title or publish-time heuristics -- see
-    suggest_joins.py for a weekly SUGGESTIONS report on everything that doesn't join here."""
+    """One group per logical post: shared vault content_id, else shared publishing-pipeline
+    external_id video prefix, else shared Upload-Post request_id (same multi-platform upload),
+    else a lone post. No title or publish-time heuristics -- see suggest_joins.py for a weekly
+    SUGGESTIONS report on everything that doesn't join here."""
     by_content: dict[tuple[str, str], list] = {}
+    by_external: dict[tuple[str, str], list] = {}
     by_request: dict[tuple[str, str], list] = {}
     lone: list[list] = []
     request_content: dict[tuple[str, str], set[str]] = {}
@@ -100,13 +116,16 @@ def _group_posts(rows) -> list[list]:
             matched = request_content.get((r["profile"], r["request_id"]), set())
             if len(matched) == 1:
                 content = next(iter(matched))
+        video_prefix = _video_prefix(r["external_id"])
         if content:
             by_content.setdefault((r["profile"], content), []).append(r)
+        elif video_prefix:
+            by_external.setdefault((r["profile"], video_prefix), []).append(r)
         elif r["request_id"]:
             by_request.setdefault((r["profile"], r["request_id"]), []).append(r)
         else:
             lone.append([r])
-    groups = list(by_content.values()) + list(by_request.values()) + lone
+    groups = list(by_content.values()) + list(by_external.values()) + list(by_request.values()) + lone
     groups.sort(key=lambda g: max(x["published_at"] or 0 for x in g), reverse=True)
     return groups
 
@@ -115,6 +134,9 @@ def _group_key(group) -> str:
     content_id = next((x["content_id"] for x in group if x["content_id"]), None)
     if content_id:
         return f"c:{content_id}"
+    video_prefix = next((_video_prefix(x["external_id"]) for x in group if _video_prefix(x["external_id"])), None)
+    if video_prefix:
+        return f"e:{video_prefix}"
     if group[0]["request_id"]:
         return f"r:{group[0]['request_id']}"
     return "p:" + ",".join(str(x["id"]) for x in sorted(group, key=lambda x: x["id"]))
@@ -146,7 +168,8 @@ def get_options() -> dict[str, Any]:
             "SELECT profile, platform, connected, reauth_required, handle, unsupported_note"
             " FROM accounts ORDER BY profile, platform").fetchall()
         posts = db.execute(
-            "SELECT p.id, p.profile, p.platform, p.request_id, p.url, p.title, p.media_type,"
+            "SELECT p.id, p.profile, p.platform, p.request_id, " + _external_id_col(db) + " AS external_id,"
+            " p.url, p.title, p.media_type,"
             " p.content_id, p.content_title, p.source,"
             " COALESCE(p.published_at, p.first_seen) AS published_at,"
             " (SELECT COUNT(*) FROM post_snapshots s WHERE s.post_id = p.id) AS snapshots"
@@ -174,7 +197,9 @@ def get_options() -> dict[str, Any]:
             "platforms": [{"platform": x["platform"], "url": x["url"], "stats": x["source"] != "vault"}
                           for x in group],
             "snapshots": sum(x["snapshots"] for x in group),
-            "joined_by": "content_id" if content_id else ("request_id" if group[0]["request_id"] else None),
+            "joined_by": "content_id" if content_id else (
+                "external_id" if _video_prefix(next((x["external_id"] for x in group if x["external_id"]), None))
+                else ("request_id" if group[0]["request_id"] else None)),
         })
     return {"status": "ok", "profiles": sorted(profiles.values(), key=lambda x: x["profile"]),
             "metrics": list(METRICS)}
@@ -236,11 +261,13 @@ def _channel_series(db, profile: str, metric: str, from_ts: int, to_ts: int, tz:
 
 def _post_series(db, profile: str, key: str, metric: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
     kind, _, ident = key.partition(":")
-    if kind not in ("c", "r", "p") or not ident:
+    if kind not in ("c", "e", "r", "p") or not ident:
         return []
     if kind == "p" and not all(x.isdigit() for x in ident.split(",")):
         return []
-    candidates = db.execute("SELECT p.id, p.profile, p.platform, p.content_id, p.request_id, p.published_at, p.source"
+    candidates = db.execute("SELECT p.id, p.profile, p.platform, p.content_id, p.request_id, "
+                            + _external_id_col(db) + " AS external_id,"
+                            " p.published_at, p.source"
                             f" FROM posts p WHERE p.profile=? AND {_visible_posts(db)}",
                             (profile, int(time.time()))).fetchall()
     posts = next((group for group in _group_posts(candidates) if _group_key(group) == key), [])

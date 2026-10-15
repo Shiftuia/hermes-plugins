@@ -249,6 +249,36 @@ def test_options_groups_by_content_id_then_request_id_then_lone(db):
     assert any(a["unsupported_note"] for a in brand["accounts"] if a["platform"] == "linkedin")
 
 
+def test_options_groups_by_external_id_video_prefix(tmp_path, monkeypatch):
+    """A cross-platform upload with no vault content_id still collapses to one group when every
+    row shares the publishing pipeline's '<video_id>:<platform>:<hash>' external_id prefix,
+    even though each platform's request_id is necessarily distinct."""
+    path = tmp_path / "upa.db"
+    con = sqlite3.connect(path)
+    con.executescript(SCHEMA)
+    con.execute("ALTER TABLE posts ADD COLUMN external_id TEXT")
+    now = int(time.time())
+    con.executemany("INSERT INTO accounts VALUES (?,?,?,?,?,?,?,?)", [
+        ("brand", "youtube", 1, 0, "@b", None, None, now),
+        ("brand", "x", 1, 0, "b", None, None, now),
+    ])
+    con.executemany("INSERT INTO posts (id, profile, platform, platform_post_id, request_id, external_id, title,"
+                    " published_at, media_type, source) VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        (1, "brand", "youtube", "yt1", "auto-aaa", "HS-031:youtube:aaa", "Nine billion", now - 3600, "VIDEO", "media"),
+        (2, "brand", "x", "x1", "auto-bbb", "HS-031:x:bbb", "Nine billion", now - 3500, None, "api"),
+    ])
+    con.commit()
+    con.close()
+    monkeypatch.setattr(plugin_api, "DB_PATH", path)
+
+    res = plugin_api.get_options()
+    brand = res["profiles"][0]
+    keys = {p["key"]: p for p in brand["posts"]}
+    assert set(keys) == {"e:HS-031"}
+    assert sorted(x["platform"] for x in keys["e:HS-031"]["platforms"]) == ["x", "youtube"]
+    assert keys["e:HS-031"]["joined_by"] == "external_id"
+
+
 def test_content_id_group_returns_one_line_per_platform(db):
     lines = plugin_api.get_series(profile="brand", target="c:HS-001", metric="primary")["lines"]
     assert sorted(l["platform"] for l in lines) == ["instagram", "youtube"]
