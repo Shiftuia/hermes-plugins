@@ -104,6 +104,29 @@ Scaffolding only — a `tests/` directory with no implementation yet. Not a dash
 completion on deterministic delivery checks. Whoever picks this up next should treat it as an
 empty slate, not a partially-built feature.
 
+### finance-review-bridge
+
+Gateway plugin for synthetic finance review in one restricted Discord guild text
+channel. Reuses the gateway's Discord client and exposes an owner-only Unix socket
+under the active Hermes profile's `plugin-data/finance-review-bridge/`. Notices and
+replies bind to a case ID, version and digest; this plugin never writes a ledger.
+
+Enable `finance-review-bridge` in `plugins.enabled`. Configure all four exact
+Discord IDs (`bot_id`, `actor_id`, `guild_id`, `channel_id`) under
+`plugins.entries.finance-review-bridge.settings` in the profile's `config.yaml`,
+or use the environment variables in `config/finance-review-bridge.env.example`.
+Plugin settings take precedence over environment variables. No IDs or credentials
+are shipped; missing or malformed IDs reject registration before any connection.
+When migrating an existing installation, copy its four IDs into profile settings
+before restarting the gateway with this version. The plugin uses the gateway's
+existing credentials and does not need another bot token.
+
+Both `DISCORD_ALLOWED_CHANNELS` and `DISCORD_FREE_RESPONSE_CHANNELS` must explicitly
+include the finance channel without a wildcard. The bridge audits gateway identity,
+channel permissions and routing before handling requests. Restart the gateway after
+configuration changes. Smoke tests (no Discord connection or live state):
+`~/.hermes/hermes-agent/venv/bin/pytest tests/test_finance_review_bridge.py`.
+
 ## License
 
 MIT — see `LICENSE`.

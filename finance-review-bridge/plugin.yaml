@@ -1,0 +1,3 @@
+name: finance-review-bridge
+version: 0.1.0
+description: Synthetic-only exact-channel finance review using the existing Discord gateway SDK
